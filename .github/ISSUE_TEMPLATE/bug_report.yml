@@ -1,0 +1,105 @@
+name: Bug report
+description: Something in FreeTunnel does not work the way it should
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report this.
+
+        **Write in English or Russian — either is fine.** / **Можно писать по-русски.**
+
+        **Found a security problem?** Do not open a public issue. Report it privately
+        through [GitHub Security Advisories](https://github.com/dimmmmmmmer/freetunnel/security/advisories/new)
+        instead — see [SECURITY.md](https://github.com/dimmmmmmmer/freetunnel/blob/main/SECURITY.md).
+
+  - type: input
+    id: version
+    attributes:
+      label: FreeTunnel version
+      description: Shown at the bottom of the **Settings** tab.
+      placeholder: "1.1.8"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Platform
+      options:
+        - Windows
+        - macOS
+        - Linux
+    validations:
+      required: true
+
+  - type: input
+    id: os_version
+    attributes:
+      label: OS version
+      description: Windows 10/11 build, macOS release, or Linux distribution and version.
+      placeholder: "Windows 11 23H2 / macOS 15.1 / Ubuntu 24.04"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: install_source
+    attributes:
+      label: How did you install it?
+      description: Several past bugs only happened with one of these, so please pick the right one.
+      options:
+        - Windows installer (.exe)
+        - macOS disk image (.dmg)
+        - Linux package (.deb)
+        - Linux portable (.AppImage)
+        - Updated from inside the app
+        - Built from source
+    validations:
+      required: true
+
+  - type: textarea
+    id: what_happened
+    attributes:
+      label: What happened
+      description: What you saw, and what you expected to see instead.
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: If it only happens sometimes, say roughly how often — that is useful on its own.
+      placeholder: |
+        1. Open FreeTunnel
+        2. ...
+        3. ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Log
+      description: |
+        The **Logs** tab shows the log file path at the bottom — click it to open the folder.
+        Paths: `%APPDATA%\FreeTunnel\FreeTunnel\freetunnel.log` (Windows),
+        `~/Library/Application Support/FreeTunnel/FreeTunnel/freetunnel.log` (macOS),
+        `~/.local/share/FreeTunnel/FreeTunnel/freetunnel.log` (Linux).
+
+        The log has **no passwords** in it, but connection lines do carry your server
+        hostname and IP addresses. Replace those with `***` before pasting if you would
+        rather not publish them.
+      render: text
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before submitting
+      options:
+        - label: I searched the [existing issues](https://github.com/dimmmmmmmer/freetunnel/issues?q=is%3Aissue) and did not find this one.
+          required: true
+        - label: I am on the [latest release](https://github.com/dimmmmmmmer/freetunnel/releases/latest), or I checked that it is still broken there.
+          required: true

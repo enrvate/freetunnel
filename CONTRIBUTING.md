@@ -164,8 +164,22 @@ absent: `FT_SKIP_UPSTREAM_COVERAGE=1 bash scripts/coverage-report.sh`).
 
 ### Branch protection and Codacy status checks
 
-`main` requires CI checks (unit tests Linux, cppcheck, clang-tidy, pinned deps, i18n)
-**and** **Codacy Static Code Analysis** in GitHub branch protection.
+`main` requires these checks in GitHub branch protection:
+
+```text
+Unit tests (ubuntu-latest)    cppcheck                 pinned dependency refs
+Unit tests (windows-latest)   clang-tidy               i18n catalog freshness
+Unit tests (macos-15)         ASan+UBSan (Linux)       Codacy Static Code Analysis
+```
+
+All three unit-test platforms gate a merge, not just Linux. Windows is roughly
+half of all downloads and macOS is most of the rest, and both are where this
+project's hard bugs have actually lived — a green Linux run says very little
+about either. ASan is required for the same reason: it has caught a real
+use-after-free here, not a hypothetical one.
+
+Branches must also be up to date with `main` before merging (**strict**), so a
+dependabot PR that has fallen behind needs `gh pr update-branch` first.
 
 Codacy still shows **main branch isn't protected** until:
 

@@ -8,9 +8,18 @@ on:
     branches: [main]
   pull_request:
   workflow_dispatch:
+  # Weekly run on a quiet main, for two reasons. The same runner-image drift the
+  # Security workflow watches for, and the Windows unit-test intermittency that
+  # has never been reproduced on demand: a scheduled run samples it on a cadence,
+  # so the next time it shows up there is a history to compare against instead of
+  # one mystery failure with nothing around it.
+  schedule:
+    - cron: '41 5 * * 1' # Mondays, 05:41 UTC
 
 concurrency:
-  group: tests-${{ github.ref }}
+  # The event is part of the group so a push cannot cancel the scheduled run
+  # that exists precisely to sample a quiet main.
+  group: tests-${{ github.ref }}-${{ github.event_name }}
   cancel-in-progress: true
 
 # Least privilege by default: no job needs to write to the repo except the

@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/dimmmmmmmer/freetunnel/security/advisories/new
+    about: Report privately through GitHub Security Advisories — never as a public issue.
+  - name: Building, testing, translating
+    url: https://github.com/dimmmmmmmer/freetunnel/blob/main/CONTRIBUTING.md
+    about: Local build, unit tests, i18n and CI are covered in CONTRIBUTING.md.

@@ -1,0 +1,36 @@
+name: Feature request
+description: Suggest something FreeTunnel should do
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **Write in English or Russian — either is fine.** / **Можно писать по-русски.**
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What are you trying to do?
+      description: Describe the situation you run into, not the solution. That usually leads somewhere better.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What would you like FreeTunnel to do?
+    validations:
+      required: true
+
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Platform
+      description: Leave blank if it applies everywhere.
+      multiple: true
+      options:
+        - Windows
+        - macOS
+        - Linux
+    validations:
+      required: false

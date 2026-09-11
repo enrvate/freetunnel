@@ -98,6 +98,15 @@ bool digestVerifyEd25519(EVP_PKEY *pkey, const QByteArray &data, const QByteArra
 }
 #endif
 
+bool releaseSignatureVerificationAvailable()
+{
+#ifdef FT_HAVE_OPENSSL
+    return true;
+#else
+    return false;
+#endif
+}
+
 bool verifyEd25519Signature(const QByteArray &data, const QByteArray &signature,
                             const QByteArray &publicKeyPem)
 {

@@ -23,6 +23,7 @@ private slots:
     void structuredTlvFuzzNeverCrash();
     void mutatesValidLinksSafely();
     void rejectsOversizedTlvLength();
+    void rejectsATlvLengthPastTheEndOfThePayload();
     void acceptsTrustTunnelQrFragment();
 };
 
@@ -263,6 +264,43 @@ void TestDeepLink::rejectsOversizedTlvLength()
                                              | QByteArray::OmitTrailingEquals));
     QString err;
     QVERIFY(!parseDeepLink(uri, &err).has_value());
+    QVERIFY(!err.isEmpty());
+}
+
+// rejectsOversizedTlvLength above uses a length above INT_MAX, which the first
+// guard in tlvLengthFits() catches. The third guard — a length that is a
+// perfectly ordinary int but reaches past the bytes actually present — had no
+// test, and deleting it broke nothing. That is the truncated link: a share link
+// cut short by a chat client, a copy that missed the tail.
+//
+// It matters beyond neatness because QByteArray::mid() silently clamps. Without
+// the bounds check nothing crashes; the parser simply accepts a short value as
+// though it were whole, so a link claiming a 64-byte password and carrying four
+// bytes would import as a four-byte password and connect with it.
+void TestDeepLink::rejectsATlvLengthPastTheEndOfThePayload()
+{
+    QByteArray p;
+    auto tlv = [&](char tag, const QByteArray &v) {
+        p.append(tag);
+        p.append(static_cast<char>(v.size()));
+        p.append(v);
+    };
+    tlv(0x01, "host.tld");
+    tlv(0x02, "10.0.0.1:8443");
+    tlv(0x05, "alice");
+    // Declares 32 bytes of password and then stops after four.
+    p.append(static_cast<char>(0x06));
+    p.append(static_cast<char>(32));
+    p.append("word");
+
+    const QString uri = QStringLiteral("tt://?")
+            + QString::fromLatin1(p.toBase64(QByteArray::Base64UrlEncoding
+                                             | QByteArray::OmitTrailingEquals));
+    QString err;
+    const auto out = parseDeepLink(uri, &err);
+    QVERIFY2(!out.has_value(),
+             "a TLV reaching past the end of the payload must be refused, not silently "
+             "truncated to whatever bytes happen to be there");
     QVERIFY(!err.isEmpty());
 }
 

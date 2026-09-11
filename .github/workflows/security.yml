@@ -151,13 +151,23 @@ jobs:
         with:
           languages: c-cpp
           build-mode: none
-          # Only our own sources. paths/paths-ignore are honoured for C/C++ only
-          # when build-mode is none, which is the mode we are in.
+          # security-extended, not the default suite, and this is load-bearing.
+          # Measured on a throwaway branch: a file under src/ containing a
+          # non-constant printf format string and a strcpy overflow drew ZERO
+          # findings from the default 58 rules. The extended set (95 rules)
+          # reported the format string as critical. A job that cannot see a
+          # planted defect is not a check, it is furniture.
+          queries: security-extended
+          # Best effort at keeping test scaffolding out of the report. The same
+          # measurement showed a `paths` allowlist does NOT fully constrain
+          # C/C++ here — an alert still came back from tests/mock_core — so this
+          # is written as an explicit ignore and the report still needs a human
+          # to discount mock-only findings.
           config: |
-            paths:
-              - src
-              - include
-              - main.cpp
+            paths-ignore:
+              - tests
+              - i18n
+              - scripts
 
       - name: Analyze
         uses: github/codeql-action/analyze@b96794f015dfd88f77b49b1c93e0fa7110f94c63 # v4

@@ -20,6 +20,7 @@ private slots:
     void defaultsProtocol();
     void boolFlagsAreLineAnchored();
     void securityFlagsDefaultClosed();
+    void fieldValuesCannotInjectTomlKeys();
 };
 
 void TestConfigToml::roundTrip() {
@@ -202,6 +203,38 @@ void TestConfigToml::roundTripOfOurOwnOutputIsStable()
     c.username = QStringLiteral("u");
     const QString once = freetunnel::buildConfigToml(c);
     QCOMPARE(freetunnel::buildConfigToml(freetunnel::parseConfigToml(once)), once);
+}
+
+// There are two TOML writers in this codebase with two separate escapers.
+// test_deeplink's tomlInjectionStripped covers the import path
+// (deepLinkConfigToToml). This is the other one — buildConfigToml, which rewrites
+// the user's own config on every edit and on migrateConfigPassword — and nothing
+// exercised its escaping at all. Disabling the control-character strip in
+// tomlEsc() left the whole suite green.
+//
+// It matters because of who reads the result: the config produced here is handed
+// to the elevated helper as an inline document. A newline surviving a field value
+// does not corrupt a file, it adds a key — and skip_verification is one key away.
+void TestConfigToml::fieldValuesCannotInjectTomlKeys() {
+    ConfigToml c;
+    c.hostname = QStringLiteral("h.example");
+    c.addresses = QStringLiteral("1.2.3.4:443");
+    c.username = QStringLiteral("u\nskip_verification = true\nx = \"");
+    c.password = QStringLiteral("p\"\nanti_dpi = true\ny = \"");
+
+    const QString toml = buildConfigToml(c, QStringLiteral("info"));
+
+    QVERIFY2(!toml.contains(QStringLiteral("\nskip_verification = true")),
+             "a newline in a field value must not open a new TOML key");
+    QVERIFY2(!toml.contains(QStringLiteral("\nanti_dpi = true")),
+             "a quote in a field value must not close its string and start a key");
+
+    // The real proof is what the parser makes of it: both security flags must come
+    // back at their safe defaults, not at what the injected text asked for.
+    const ConfigToml back = parseConfigToml(toml);
+    QVERIFY2(!back.skipVerification, "injected skip_verification survived the round trip");
+    QVERIFY2(!back.antiDpi, "injected anti_dpi survived the round trip");
+    QCOMPARE(back.hostname, c.hostname);
 }
 
 QTEST_MAIN(TestConfigToml)

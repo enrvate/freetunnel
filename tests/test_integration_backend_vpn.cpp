@@ -29,6 +29,7 @@ private slots:
     void backendConnectsThroughMockHelper();
     void connectPushesTheSecuritySettingsToTheHelper();
     void connectWithNoRulesAsksForTheFullTunnelNotSelective();
+    void togglingTheKillSwitchWhileConnectedReachesTheCore();
     void configSwitchSuppressesCoreDisconnectToast();
     void deletingActiveConfigWhileConnectedTearsDownTunnel();
     void exportRoundTrips();
@@ -250,6 +251,56 @@ void TestIntegrationBackendVpn::connectWithNoRulesAsksForTheFullTunnelNotSelecti
     // The user's chosen setting is not silently rewritten; only what the core is
     // told differs.
     QCOMPARE(backend.vpnMode(), QStringLiteral("selective"));
+
+    backend.disconnectVpn();
+    QVERIFY(QTest::qWaitFor([&]() { return !backend.connected() && !backend.connecting(); }, 5000));
+    backend.prepareQuit();
+    qunsetenv("FT_TEST_HELPER_PORT");
+    qunsetenv("FT_TEST_HELPER_TOKEN");
+}
+
+// Everything the suite checked about the kill switch was checked at connect
+// time. Nothing covered the toggle itself, so deleting the m_client.setKillSwitch(v)
+// line from Backend::setKillSwitch left the whole suite green: the setting would
+// persist, the GUI would read ON, and the running tunnel would never hear about
+// it until the next connect. That is the worst shape for this particular switch —
+// the user believes traffic is blocked on drop, and it is not.
+void TestIntegrationBackendVpn::togglingTheKillSwitchWhileConnectedReachesTheCore()
+{
+    const QString base = QStandardPaths::writableLocation(QStandardPaths::AppConfigLocation);
+    QDir().mkpath(base);
+    QString configPath;
+    QVERIFY(writeTestConfig(base, QStringLiteral("killtoggle.example"), &configPath));
+    QVERIFY(freetunnel::CredentialStore::storePassword(configPath, QStringLiteral("secret")));
+
+    saveStoredConfigs({configPath});
+    AppSettings settings = loadAppSettings();
+    settings.last_config_path = configPath;
+    settings.killswitch_enabled = false; // start off, so the toggle has somewhere to go
+    saveAppSettings(settings);
+
+    const QString token = QStringLiteral("backend-killtoggle-token");
+    MockHelperServer server(token);
+    QVERIFY(server.listen());
+    qputenv("FT_TEST_HELPER_PORT", QByteArray::number(server.port()));
+    qputenv("FT_TEST_HELPER_TOKEN", token.toUtf8());
+
+    Backend backend;
+    backend.connectVpn();
+    QVERIFY(QTest::qWaitFor([&]() { return backend.connected(); }, 10000));
+    QCOMPARE(server.lastMessageFor(QStringLiteral("setKillSwitch"))
+                     .value(QStringLiteral("enabled")).toBool(), false);
+
+    backend.setKillSwitch(true);
+    QVERIFY2(QTest::qWaitFor(
+                     [&]() {
+                         return server.lastMessageFor(QStringLiteral("setKillSwitch"))
+                                 .value(QStringLiteral("enabled")).toBool();
+                     },
+                     5000),
+             "flipping the kill switch on a live connection must reach the core, not just "
+             "the settings file");
+    QCOMPARE(backend.killSwitch(), true);
 
     backend.disconnectVpn();
     QVERIFY(QTest::qWaitFor([&]() { return !backend.connected() && !backend.connecting(); }, 5000));

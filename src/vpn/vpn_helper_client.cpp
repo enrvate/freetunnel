@@ -496,34 +496,38 @@ void VpnHelperClient::handleReadyEvent()
     connectVpn();
 }
 
+void VpnHelperClient::handleChallengeEvent(const QJsonObject &ev) {
+    // Verify the peer before answering: a wrong proof means we are talking to
+    // something that squatted the port, not to our elevated helper. Failing
+    // closed here is what keeps the config TOML — and the VPN password in it
+    // — from ever reaching it.
+    if (m_helloAcked || m_guiNonce.isEmpty())
+        return;
+    if (!vpn_helper::tokensEqual(
+                ev.value("proof").toString(),
+                vpn_helper::authProof(m_token, QString::fromLatin1(vpn_helper::kHelperRole),
+                                      m_guiNonce))) {
+        fail(tr("The process answering on the helper port could not prove it is the "
+                "FreeTunnel helper — refusing to send the config."));
+        return;
+    }
+    const QString helperNonce = ev.value("nonce").toString();
+    if (helperNonce.isEmpty()) {
+        fail(tr("VPN helper sent an invalid challenge"));
+        return;
+    }
+    m_peerProven = true;
+    QJsonObject auth;
+    auth["cmd"] = "auth";
+    auth["proof"] = vpn_helper::authProof(m_token, QString::fromLatin1(vpn_helper::kGuiRole),
+                                          helperNonce);
+    send(auth);
+}
+
 void VpnHelperClient::handleEvent(const QJsonObject &ev) {
     const QString type = ev.value("ev").toString();
     if (type == "challenge") {
-        // Verify the peer before answering: a wrong proof means we are talking to
-        // something that squatted the port, not to our elevated helper. Failing
-        // closed here is what keeps the config TOML — and the VPN password in it
-        // — from ever reaching it.
-        if (m_helloAcked || m_guiNonce.isEmpty())
-            return;
-        if (!vpn_helper::tokensEqual(
-                    ev.value("proof").toString(),
-                    vpn_helper::authProof(m_token, QString::fromLatin1(vpn_helper::kHelperRole),
-                                          m_guiNonce))) {
-            fail(tr("The process answering on the helper port could not prove it is the "
-                    "FreeTunnel helper — refusing to send the config."));
-            return;
-        }
-        const QString helperNonce = ev.value("nonce").toString();
-        if (helperNonce.isEmpty()) {
-            fail(tr("VPN helper sent an invalid challenge"));
-            return;
-        }
-        m_peerProven = true;
-        QJsonObject auth;
-        auth["cmd"] = "auth";
-        auth["proof"] = vpn_helper::authProof(m_token, QString::fromLatin1(vpn_helper::kGuiRole),
-                                              helperNonce);
-        send(auth);
+        handleChallengeEvent(ev);
         return;
     }
     // Until the peer has proven it holds the token, NOTHING else it says means

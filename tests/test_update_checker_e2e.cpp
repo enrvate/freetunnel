@@ -656,6 +656,17 @@ void TestUpdateCheckerE2e::downloadRejectsBadChecksum()
     QVERIFY(QTest::qWaitFor([&]() { return failed.count() > 0; }, 10000));
     QCOMPARE(failed.count(), 1);
 
+    // Reporting the mismatch is only half the job: the file that failed the check
+    // is an executable installer sitting in a directory the user can open. Leaving
+    // it there turns a refused update into one they can still run by hand, and
+    // deleting the QFile::remove() that prevents that broke nothing in this suite.
+    const QString staged = QStandardPaths::writableLocation(QStandardPaths::CacheLocation)
+            + QStringLiteral("/updates/") + testInstallerAssetName();
+    QVERIFY2(!QFile::exists(staged),
+             qPrintable(QStringLiteral("an installer that failed its integrity check must not "
+                                       "be left behind at %1")
+                                .arg(staged)));
+
     qunsetenv("FT_GITHUB_API_BASE");
     qunsetenv("FT_TEST_SKIP_UPDATE_SIG");
 }

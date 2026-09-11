@@ -5,7 +5,7 @@ format used by QR codes and mobile clients.
 
 ## URI format
 
-```
+```text
 tt://?<base64url-payload>
 ```
 

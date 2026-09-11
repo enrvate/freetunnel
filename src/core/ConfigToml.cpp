@@ -212,6 +212,25 @@ QString buildConfigToml(const ConfigToml &c, const QString &logLevel) {
     return t;
 }
 
+// Carry over everything ConfigToml has no field for, so buildConfigToml() can put
+// it back. Without this the round trip is lossy in a way nobody sees: the file
+// still parses, still connects, and quietly routes differently.
+static void carryOverUnknownTables(const QString &toml, ConfigToml &c) {
+    for (const auto &table : splitTomlTables(toml)) {
+        const QString &header = table.first;
+        const QString &body = table.second;
+        if (header.isEmpty()) {
+            c.extraRootKeys = unknownKeyLines(body, knownRootKeys());
+        } else if (header == QLatin1String("endpoint")) {
+            c.extraEndpointKeys = unknownKeyLines(body, knownEndpointKeys());
+        } else if (header == QLatin1String("listener.tun")) {
+            c.tunSection = normalizeBody(body);
+        } else {
+            c.extraSections += QStringLiteral("\n[%1]\n").arg(header) + normalizeBody(body);
+        }
+    }
+}
+
 ConfigToml parseConfigToml(const QString &toml) {
     ConfigToml c;
     auto unesc = [](QString v) { return v.replace("\\\"", "\"").replace("\\\\", "\\"); };
@@ -263,22 +282,7 @@ ConfigToml parseConfigToml(const QString &toml) {
     // round-trips byte for byte.
     c.certificate = cm.hasMatch() ? unesc(cm.captured(1)) : QString();
 
-    // Carry out everything this struct has no field for, so buildConfigToml() can
-    // put it back. Without this the round trip is lossy in a way nobody sees: the
-    // file still parses, still connects, and quietly routes differently.
-    for (const auto &table : splitTomlTables(toml)) {
-        const QString &header = table.first;
-        const QString &body = table.second;
-        if (header.isEmpty()) {
-            c.extraRootKeys = unknownKeyLines(body, knownRootKeys());
-        } else if (header == QLatin1String("endpoint")) {
-            c.extraEndpointKeys = unknownKeyLines(body, knownEndpointKeys());
-        } else if (header == QLatin1String("listener.tun")) {
-            c.tunSection = normalizeBody(body);
-        } else {
-            c.extraSections += QStringLiteral("\n[%1]\n").arg(header) + normalizeBody(body);
-        }
-    }
+    carryOverUnknownTables(toml, c);
     return c;
 }
 

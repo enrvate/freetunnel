@@ -198,6 +198,30 @@ private:
             m_sock->write(QJsonDocument(e).toJson(QJsonDocument::Compact) + '\n');
     }
 
+    // Step 1 of the handshake: the GUI opens with a nonce and no secret. We answer
+    // with our proof (so it can tell a real helper from whoever squatted the port)
+    // plus a nonce of our own for it to answer in turn. Split out of
+    // onPendingRead() so that step 1 and step 2 are each readable on their own;
+    // every exit here either drops the peer or leaves it pending, never authed.
+    void handleHelloLine(QTcpSocket *s, const QJsonObject &c, const QByteArray &rest) {
+        const QString guiNonce = c.value("nonce").toString();
+        if (guiNonce.isEmpty() || m_pendingNonce.contains(s)) {
+            dropPending(s);
+            return;
+        }
+        const QString ourNonce = randomNonce();
+        m_pendingNonce.insert(s, ourNonce);
+        m_pendingBuf[s] = rest;
+        QJsonObject e;
+        e["ev"] = "challenge";
+        e["proof"] = vpn_helper::authProof(m_token, QString::fromLatin1(vpn_helper::kHelperRole),
+                                           guiNonce);
+        e["nonce"] = ourNonce;
+        s->write(QJsonDocument(e).toJson(QJsonDocument::Compact) + '\n');
+        if (!m_pendingBuf[s].isEmpty())
+            onPendingRead(s); // the auth line may already be in the same burst
+    }
+
     void onPendingRead(QTcpSocket *s) {
         if (!m_pending.contains(s))
             return;
@@ -219,26 +243,8 @@ private:
             return;
         }
         const QString cmd = c.value("cmd").toString();
-        // Step 1: the GUI opens with a nonce and no secret. We answer with our
-        // proof (so it can tell a real helper from whoever squatted the port)
-        // plus a nonce of our own for it to answer in turn.
         if (cmd == QLatin1String("hello")) {
-            const QString guiNonce = c.value("nonce").toString();
-            if (guiNonce.isEmpty() || m_pendingNonce.contains(s)) {
-                dropPending(s);
-                return;
-            }
-            const QString ourNonce = randomNonce();
-            m_pendingNonce.insert(s, ourNonce);
-            m_pendingBuf[s] = rest;
-            QJsonObject e;
-            e["ev"] = "challenge";
-            e["proof"] = vpn_helper::authProof(m_token, QString::fromLatin1(vpn_helper::kHelperRole),
-                                               guiNonce);
-            e["nonce"] = ourNonce;
-            s->write(QJsonDocument(e).toJson(QJsonDocument::Compact) + '\n');
-            if (!m_pendingBuf[s].isEmpty())
-                onPendingRead(s); // the auth line may already be in the same burst
+            handleHelloLine(s, c, rest);
             return;
         }
         // Step 2: the GUI proves it holds the same token. Only then does this

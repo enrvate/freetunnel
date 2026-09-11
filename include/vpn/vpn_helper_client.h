@@ -69,6 +69,9 @@ private:
     void onReadyRead();
     void onSocketConnected();
     void handleEvent(const QJsonObject &ev);
+    // The first half of the mutual handshake, split out of handleEvent() so that
+    // the peer check and the event dispatch can each be read on their own.
+    void handleChallengeEvent(const QJsonObject &ev);
     void handleReadyEvent();
     void setState(State s);
     void fail(const QString &msg);

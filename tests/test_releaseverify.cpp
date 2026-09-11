@@ -14,11 +14,10 @@ private slots:
     void verifyMatch();
     void verifyMismatch();
     void versionFromSumsReadsTheSignedVersion();
-#if __has_include(<openssl/evp.h>)
+    void signatureVerificationIsCompiledIn();
     void ed25519Valid();
     void ed25519Invalid();
     void theShippedSigningKeyIsAUsableEd25519PublicKey();
-#endif
 };
 
 void TestReleaseVerify::parseSums()
@@ -91,9 +90,24 @@ void TestReleaseVerify::versionFromSumsReadsTheSignedVersion()
     QVERIFY(versionFromSums("abc  version=2.0.0\n").isEmpty());
 }
 
-#if __has_include(<openssl/evp.h>)
+// These three used to sit behind `#if __has_include(<openssl/evp.h>)` — the very
+// condition that turns verifyEd25519Signature() into a flat `false`. So they
+// vanished from the binary at exactly the moment the feature they guard stopped
+// working, and a local run reported "6 passed, 0 skipped" with no hint that
+// signature verification had not been exercised at all. Compiled in
+// unconditionally now, and skipped out loud when the capability is missing.
+void TestReleaseVerify::signatureVerificationIsCompiledIn()
+{
+    if (!releaseSignatureVerificationAvailable())
+        QSKIP("built without OpenSSL: update signature verification is INERT in this "
+              "build and the three tests below cannot run. Never ship such a build.");
+    QVERIFY(releaseSignatureVerificationAvailable());
+}
+
 void TestReleaseVerify::ed25519Valid()
 {
+    if (!releaseSignatureVerificationAvailable())
+        QSKIP("built without OpenSSL");
     static const char kPubPem[] =
         "-----BEGIN PUBLIC KEY-----\n"
         "MCowBQYDK2VwAyEAdSdq79YO2Q2DAi/R23X7qCa5qsL3EVwG3Kb064ajl38=\n"
@@ -107,6 +121,8 @@ void TestReleaseVerify::ed25519Valid()
 
 void TestReleaseVerify::ed25519Invalid()
 {
+    if (!releaseSignatureVerificationAvailable())
+        QSKIP("built without OpenSSL");
     static const char kPubPem[] =
         "-----BEGIN PUBLIC KEY-----\n"
         "MCowBQYDK2VwAyEAdSdq79YO2Q2DAi/R23X7qCa5qsL3EVwG3Kb064ajl38=\n"
@@ -117,7 +133,6 @@ void TestReleaseVerify::ed25519Invalid()
         "fdf3503b8c06c3b4be0fcd547d773250c634ca96df804b15f5336f355a6563008");
     QVERIFY(!verifyEd25519Signature(manifest, sig, kPubPem));
 }
-#endif
 
 // The updater's whole trust anchor is one string constant. test_update_checker_e2e
 // deliberately compiles against a generated stand-in key so it can sign its own
@@ -128,12 +143,37 @@ void TestReleaseVerify::ed25519Invalid()
 // every future update or stops checking signatures at all. Neither should be
 // reachable by accident, so assert the shipped constant is a real key here, where
 // the real header is the one being compiled.
-#if __has_include(<openssl/evp.h>)
+//
+// The first two checks below never needed OpenSSL — they are string assertions
+// about a compiled-in constant — yet the whole test used to be hidden behind
+// __has_include, so a build without OpenSSL also lost its only guard against the
+// shipped key being blanked. They now run everywhere; only the part that asks
+// OpenSSL to parse the key is skipped.
 void TestReleaseVerify::theShippedSigningKeyIsAUsableEd25519PublicKey()
 {
     const QByteArray pem = QByteArray(freetunnel::kReleaseSigningPublicKeyPem);
     QVERIFY2(!pem.trimmed().isEmpty(), "the shipped release signing key is empty");
     QVERIFY2(pem.contains("-----BEGIN PUBLIC KEY-----"), "not a SubjectPublicKeyInfo PEM");
+
+    // Shape-check the key itself, with arithmetic rather than OpenSSL, so this
+    // still bites in a build that has no OpenSSL — which is the local dev build,
+    // and so the one where a mangled key would first appear. An Ed25519
+    // SubjectPublicKeyInfo is exactly 44 bytes: a 12-byte DER header naming
+    // OID 1.3.101.112, then the 32-byte key. Emptying the base64 body leaves a
+    // PEM that is neither empty nor missing its BEGIN line, so the two checks
+    // above wave it through; this one does not.
+    QByteArray b64;
+    for (const QByteArray &line : pem.split('\n')) {
+        const QByteArray t = line.trimmed();
+        if (!t.isEmpty() && !t.startsWith("-----"))
+            b64 += t;
+    }
+    const QByteArray der = QByteArray::fromBase64(b64);
+    QCOMPARE(der.size(), 44);
+    QCOMPARE(der.left(12).toHex(), QByteArrayLiteral("302a300506032b6570032100"));
+
+    if (!releaseSignatureVerificationAvailable())
+        QSKIP("built without OpenSSL: the key cannot be load-tested here");
 
     // Well-formed is not enough — OpenSSL has to accept it as an Ed25519 key, which
     // is what verifyEd25519Signature() will ask of it at update time. Feeding it a
@@ -147,7 +187,6 @@ void TestReleaseVerify::theShippedSigningKeyIsAUsableEd25519PublicKey()
             QByteArrayLiteral("payload"), QByteArrayLiteral("not-a-signature"),
             QByteArrayLiteral("-----BEGIN PUBLIC KEY-----\nbroken\n-----END PUBLIC KEY-----\n")));
 }
-#endif
 
 QTEST_MAIN(TestReleaseVerify)
 #include "test_releaseverify.moc"

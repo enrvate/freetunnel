@@ -273,11 +273,26 @@ if (UNIX AND NOT APPLE)
         target_link_libraries(FreeTunnel PRIVATE OpenSSL::SSL OpenSSL::Crypto)
         target_link_options(FreeTunnel PRIVATE "LINKER:--end-group")
     endif ()
-else ()
-    find_package(OpenSSL QUIET)
-    if (OpenSSL_FOUND)
-        target_link_libraries(FreeTunnel PRIVATE OpenSSL::Crypto)
+    if (NOT OpenSSL_FOUND AND NOT TARGET OpenSSL::Crypto)
+        # The HTTP/3-off path is the documented local dev build (CONTRIBUTING),
+        # not something we ship, so it stays buildable without OpenSSL — but
+        # say so, because the only other symptom is an updater that rejects
+        # every release as unsigned.
+        message(WARNING
+            "Building without OpenSSL: in-app update signature verification will "
+            "be inert (verifyEd25519Signature() always returns false). Fine for a "
+            "local build, never for one you distribute.")
     endif ()
+else ()
+    # REQUIRED, not QUIET. macOS and Windows are release platforms — together
+    # most of the downloads — and this used to be optional, which meant a build
+    # machine without OpenSSL produced a perfectly healthy-looking binary whose
+    # updater silently rejected every update forever. Nothing caught it: the
+    # tests that exercise signature verification are compiled out by the same
+    # __has_include that disables the feature, so they disappear precisely when
+    # they would have fired. Fail the configure instead.
+    find_package(OpenSSL REQUIRED)
+    target_link_libraries(FreeTunnel PRIVATE OpenSSL::Crypto)
 endif ()
 
 if (APPLE)

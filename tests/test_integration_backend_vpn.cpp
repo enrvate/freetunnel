@@ -28,6 +28,7 @@ private slots:
     void init();
     void backendConnectsThroughMockHelper();
     void connectPushesTheSecuritySettingsToTheHelper();
+    void connectWithNoRulesAsksForTheFullTunnelNotSelective();
     void configSwitchSuppressesCoreDisconnectToast();
     void deletingActiveConfigWhileConnectedTearsDownTunnel();
     void exportRoundTrips();
@@ -199,6 +200,62 @@ static bool writeTestConfig(const QString &base, const QString &hostname, QStrin
         return false;
     *outPath = configFile.fileName();
     return true;
+}
+
+// The sibling above proves selective mode is requested when a rule exists. This
+// is the other half, and it is the half that leaks: "selective" routes ONLY the
+// listed rules through the tunnel, so an empty list routes nothing and every
+// byte leaves in the clear while the UI still says Connected.
+//
+// backend_split already checks selectiveModeActive() and selectiveModeWouldLeak(),
+// but those are what the Backend *thinks*. Nothing checked what the core is
+// actually told, and the wiring between the two is where this can break: a
+// mutation that left both predicates correct and passed domain_bypass_enabled
+// straight to setVpnMode() went unnoticed by the whole suite.
+void TestIntegrationBackendVpn::connectWithNoRulesAsksForTheFullTunnelNotSelective()
+{
+    const QString base = QStandardPaths::writableLocation(QStandardPaths::AppConfigLocation);
+    QDir().mkpath(base);
+    QString configPath;
+    QVERIFY(writeTestConfig(base, QStringLiteral("norules.example"), &configPath));
+    QVERIFY(freetunnel::CredentialStore::storePassword(configPath, QStringLiteral("secret")));
+
+    saveStoredConfigs({configPath});
+    AppSettings settings = loadAppSettings();
+    settings.last_config_path = configPath;
+    settings.domain_bypass_enabled = true;
+    settings.vpn_mode = QStringLiteral("selective");
+    // The reachable misconfiguration: a fresh install, "Clear all", or a newly
+    // added profile all leave the active rule list empty.
+    settings.profiles[QStringLiteral("Default")] = {};
+    settings.domain_bypass_rules = {};
+    saveAppSettings(settings);
+
+    const QString token = QStringLiteral("backend-norules-token");
+    MockHelperServer server(token);
+    QVERIFY(server.listen());
+    qputenv("FT_TEST_HELPER_PORT", QByteArray::number(server.port()));
+    qputenv("FT_TEST_HELPER_TOKEN", token.toUtf8());
+
+    Backend backend;
+    backend.connectVpn();
+    QVERIFY(QTest::qWaitFor([&]() { return backend.connected(); }, 10000));
+
+    const QJsonObject mode = server.lastMessageFor(QStringLiteral("setMode"));
+    QVERIFY2(!mode.isEmpty(), "connect never sent setMode to the helper");
+    QVERIFY2(!mode.value(QStringLiteral("selective")).toBool(),
+             "selective mode with an empty rule list must NOT reach the core - it would "
+             "route nothing through the tunnel while the UI says Connected");
+
+    // The user's chosen setting is not silently rewritten; only what the core is
+    // told differs.
+    QCOMPARE(backend.vpnMode(), QStringLiteral("selective"));
+
+    backend.disconnectVpn();
+    QVERIFY(QTest::qWaitFor([&]() { return !backend.connected() && !backend.connecting(); }, 5000));
+    backend.prepareQuit();
+    qunsetenv("FT_TEST_HELPER_PORT");
+    qunsetenv("FT_TEST_HELPER_TOKEN");
 }
 
 void TestIntegrationBackendVpn::configSwitchSuppressesCoreDisconnectToast()

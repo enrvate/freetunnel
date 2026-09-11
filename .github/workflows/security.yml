@@ -120,3 +120,46 @@ jobs:
 
       - name: Verify translation catalog is up to date
         run: bash scripts/i18n-verify.sh
+
+  codeql:
+    name: CodeQL
+    # Deliberately NOT a required check on main. This is a triage feed into the
+    # Security tab, not a gate: its findings need a human to judge, and a gate
+    # that reports things nobody will fix is how the old clang-tidy config became
+    # decorative (see .clang-tidy for that story).
+    permissions:
+      contents: read
+      security-events: write
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      # build-mode: none, and that choice is the whole reason this job is cheap
+      # enough to exist. FreeTunnel does not build standalone: a traced build
+      # needs the upstream TrustTunnel checkout, the stats patch, conan, a Rust
+      # toolchain for quiche and Qt from aqt — eleven minutes before the first
+      # line of our own code compiles. It would also extract the entire upstream
+      # core and its vendored TLS stack, burying our ~13k lines in alerts about
+      # code this project cannot fix.
+      #
+      # The trade-off is real and worth stating: without a build CodeQL cannot
+      # resolve Qt's headers or see moc-generated code, so its dataflow is
+      # weaker than a traced run. What is left still crosses function boundaries,
+      # which is more than cppcheck or our curated clang-tidy list attempt.
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@b96794f015dfd88f77b49b1c93e0fa7110f94c63 # v4
+        with:
+          languages: c-cpp
+          build-mode: none
+          # Only our own sources. paths/paths-ignore are honoured for C/C++ only
+          # when build-mode is none, which is the mode we are in.
+          config: |
+            paths:
+              - src
+              - include
+              - main.cpp
+
+      - name: Analyze
+        uses: github/codeql-action/analyze@b96794f015dfd88f77b49b1c93e0fa7110f94c63 # v4
+        with:
+          category: /language:c-cpp

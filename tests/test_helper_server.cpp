@@ -14,6 +14,7 @@
 #include <QDir>
 #include <QFile>
 #include <QHostAddress>
+#include <QElapsedTimer>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QMap>
@@ -92,6 +93,8 @@ private slots:
     void serverRejectsPeerWithoutTheToken();
     void serverRejectsAuthWithoutHello();
     void serverSurvivesGarbageAndOversizedInput();
+    void serverDropsAPreAuthPeerThatExceedsTheLineCap();
+    void serverDropsASecondHelloOnTheSameConnection();
     void serverRefusesPathBasedConnect();
     void newestConnectionCanStillAuthenticateUnderPreAuthPressure();
     void connectIgnoresAnyLogPathTheClientSends();
@@ -341,6 +344,84 @@ void TestHelperServer::serverSurvivesGarbageAndOversizedInput()
     QVERIFY(good.waitForReadyRead(3000));
     QCOMPARE(QJsonDocument::fromJson(good.readLine()).object().value(QStringLiteral("ev")).toString(),
              QStringLiteral("challenge"));
+}
+
+// The cap on a pre-auth line is a documented security property — see
+// docs/security-threats.md, "Pre-authentication connections are capped and
+// time-limited so they cannot exhaust the root process". Nothing checked it.
+//
+// The garbage test above cannot: its first line is unparseable JSON, so the peer
+// is already dropped for that reason before a single oversized byte is weighed,
+// and its waitForDisconnected() result is never asserted on. Removing the cap
+// entirely left that test green.
+//
+// So send nothing but bulk, and no newline: the helper cannot frame a line, and
+// the only thing that can end this connection is the cap.
+void TestHelperServer::serverDropsAPreAuthPeerThatExceedsTheLineCap()
+{
+    const QString token = QStringLiteral("token-for-line-cap");
+    quint16 port = 0;
+    QVERIFY(startHelperOnAFreePort(token, &port));
+
+    QTcpSocket hog;
+    hog.connectToHost(QHostAddress(QStringLiteral("127.0.0.1")), port);
+    QVERIFY(hog.waitForConnected(3000));
+
+    hog.write(QByteArray(vpn_helper::kMaxIpcLineBytes + 1024, 'x'));
+    hog.flush();
+    while (hog.bytesToWrite() > 0 && hog.waitForBytesWritten(3000)) { }
+
+    // The wait is deliberately far below the helper's 5 s pre-auth deadline, and
+    // that is the whole discriminating power of this test. Every pending socket
+    // is dropped when the deadline fires, so a generous wait would go green
+    // whether the cap exists or not — which is exactly what happened on the first
+    // attempt at this test. The cap drops the peer the moment the bytes land, so
+    // if this connection is still open a second later, the cap is gone.
+    QElapsedTimer elapsed;
+    elapsed.start();
+    const bool dropped = hog.waitForDisconnected(1500);
+    QVERIFY2(dropped && elapsed.elapsed() < 1500,
+             qPrintable(QStringLiteral("a pre-auth peer past the line cap must be dropped "
+                                       "immediately, not left to the %1 ms deadline "
+                                       "(disconnected=%2 after %3 ms)")
+                                .arg(5000)
+                                .arg(dropped)
+                                .arg(elapsed.elapsed())));
+
+    // And the helper is still there for an honest client.
+    QCOMPARE(m_helper->state(), QProcess::Running);
+}
+
+// A peer that says hello twice is either confused or probing: the second hello
+// would hand it a fresh server nonce for the same socket, letting it discard a
+// challenge it did not like and ask for another. The helper drops it instead.
+void TestHelperServer::serverDropsASecondHelloOnTheSameConnection()
+{
+    const QString token = QStringLiteral("token-for-double-hello");
+    quint16 port = 0;
+    QVERIFY(startHelperOnAFreePort(token, &port));
+
+    QTcpSocket peer;
+    peer.connectToHost(QHostAddress(QStringLiteral("127.0.0.1")), port);
+    QVERIFY(peer.waitForConnected(3000));
+
+    QJsonObject hello;
+    hello[QStringLiteral("cmd")] = QStringLiteral("hello");
+    hello[QStringLiteral("nonce")] = QStringLiteral("first-nonce");
+    peer.write(QJsonDocument(hello).toJson(QJsonDocument::Compact) + '\n');
+    peer.flush();
+    QVERIFY(peer.waitForReadyRead(3000));
+    const QJsonObject first = QJsonDocument::fromJson(peer.readLine()).object();
+    QCOMPARE(first.value(QStringLiteral("ev")).toString(), QStringLiteral("challenge"));
+
+    hello[QStringLiteral("nonce")] = QStringLiteral("second-nonce");
+    peer.write(QJsonDocument(hello).toJson(QJsonDocument::Compact) + '\n');
+    peer.flush();
+
+    QVERIFY2(peer.waitForDisconnected(5000),
+             "a second hello on one connection must drop the peer, not re-challenge it");
+    QVERIFY2(!peer.readAll().contains("challenge"),
+             "the helper must not issue a second challenge on the same socket");
 }
 
 // Hardening the elevated side already relies on: a connect naming a FILE must be

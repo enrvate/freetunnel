@@ -38,6 +38,7 @@ private slots:
     void clientHandshakeAndConnectFlow();
     void realClientRefusesPeerThatCannotProveTheToken();
     void realClientRefusesPeerThatSkipsTheChallenge();
+    void realClientRefusesAChallengeCarryingNoNonce();
     void securitySettingsAreSentAsValuesNotJustCommandNames();
 };
 
@@ -144,6 +145,65 @@ void TestIntegrationHelperClient::realClientRefusesPeerThatCannotProveTheToken()
     QVERIFY(received.contains("\"cmd\":\"hello\""));
     QVERIFY(!received.contains("super-secret"));
     QVERIFY(!received.contains("\"cmd\":\"auth\""));
+    QVERIFY(!received.contains("\"cmd\":\"connect\""));
+
+    qunsetenv("FT_TEST_HELPER_PORT");
+    qunsetenv("FT_TEST_HELPER_TOKEN");
+}
+
+// The sibling above gives a wrong proof. This one gives a RIGHT proof and no
+// nonce, which is the more interesting case: the peer has satisfied the only
+// check most readers think about, and the client still has to refuse — with no
+// server nonce there is nothing for its own proof to answer, so whatever it
+// sent back would be a constant a listener could replay.
+//
+// Found by mutation: deleting the empty-nonce check broke nothing in the suite.
+void TestIntegrationHelperClient::realClientRefusesAChallengeCarryingNoNonce()
+{
+    const QString token = QStringLiteral("no-nonce-challenge-token");
+
+    QTcpServer rogue;
+    QVERIFY(rogue.listen(QHostAddress(QStringLiteral("127.0.0.1")), 0));
+
+    QByteArray received;
+    QTcpSocket *peer = nullptr;
+    connect(&rogue, &QTcpServer::newConnection, this, [&]() {
+        peer = rogue.nextPendingConnection();
+        connect(peer, &QTcpSocket::readyRead, this, [&]() {
+            received += peer->readAll();
+            const int nl = received.indexOf('\n');
+            if (nl < 0 || !received.contains("\"cmd\":\"hello\""))
+                return;
+            const QJsonObject hello =
+                    QJsonDocument::fromJson(received.left(nl)).object();
+            QJsonObject ch;
+            ch[QStringLiteral("ev")] = QStringLiteral("challenge");
+            // A genuine proof: this peer really does hold the token.
+            ch[QStringLiteral("proof")] = vpn_helper::authProof(
+                    token, QString::fromLatin1(vpn_helper::kHelperRole),
+                    hello.value(QStringLiteral("nonce")).toString());
+            ch[QStringLiteral("nonce")] = QString();  // ... but no nonce of its own
+            peer->write(QJsonDocument(ch).toJson(QJsonDocument::Compact) + '\n');
+            peer->flush();
+        });
+    });
+
+    qputenv("FT_TEST_HELPER_PORT", QByteArray::number(rogue.serverPort()));
+    qputenv("FT_TEST_HELPER_TOKEN", token.toUtf8());
+
+    VpnHelperClient client;
+    QSignalSpy errors(&client, &VpnHelperClient::vpnError);
+    client.loadConfigFromToml(QStringLiteral("password = \"super-secret\"\n"));
+    client.connectVpn();
+
+    QTRY_VERIFY_WITH_TIMEOUT(!errors.isEmpty(), 5000);
+    // Same guard as the sibling: the negative assertions mean nothing unless the
+    // client actually talked to this peer.
+    QVERIFY(received.contains("\"cmd\":\"hello\""));
+    QVERIFY2(!received.contains("\"cmd\":\"auth\""),
+             "the client must not answer a challenge that carries no nonce");
+    QVERIFY2(!received.contains("super-secret"),
+             "the config, and the VPN password in it, must never reach this peer");
     QVERIFY(!received.contains("\"cmd\":\"connect\""));
 
     qunsetenv("FT_TEST_HELPER_PORT");

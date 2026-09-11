@@ -19,6 +19,7 @@ private slots:
     void emptyCertificate();
     void defaultsProtocol();
     void boolFlagsAreLineAnchored();
+    void securityFlagsDefaultClosed();
 };
 
 void TestConfigToml::roundTrip() {
@@ -99,6 +100,26 @@ void TestConfigToml::boolFlagsAreLineAnchored() {
     // And a genuine line-anchored flag is still read.
     ConfigToml on = parseConfigToml(QStringLiteral("skip_verification = true\n"));
     QCOMPARE(on.skipVerification, true);
+}
+
+// The test above always spells the flags out. What it never covers is a config
+// that simply omits them, which is the common case: a minimal TOML, or one
+// written by an older client. The defaults then decide, and one of them is
+// security-significant — skip_verification turns off server certificate
+// checking, so it has to default closed rather than open.
+//
+// Found by mutation: flipping that default to `true` broke nothing in the suite.
+void TestConfigToml::securityFlagsDefaultClosed() {
+    const ConfigToml c = parseConfigToml(QStringLiteral(
+            "hostname = \"vpn.example.com\"\n"
+            "username = \"u\"\n"));
+    QVERIFY2(!c.skipVerification,
+             "a config that does not mention skip_verification must still verify "
+             "the server certificate");
+    QVERIFY2(!c.antiDpi, "anti_dpi must default off");
+    // Not a security flag, but the same class of silent default: IPv6 is allowed
+    // unless a config says otherwise, and flipping it would black-hole v6 traffic.
+    QVERIFY2(c.allowIpv6, "has_ipv6 must default on");
 }
 
 // A config is rewritten far more often than it looks: migrateConfigPassword()

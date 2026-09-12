@@ -19,6 +19,7 @@
 #include <QTemporaryDir>
 
 #include "app/Backend.h"
+#include "core/UpdateChecker.h"
 #include "mock_http_server.h"
 
 class TestBackendUpdates : public QObject {
@@ -32,6 +33,7 @@ private slots:
     void failedCheckReportsTheFailure();
     void retryAfterFailedCheckChecksAgainInsteadOfDownloading();
     void backgroundCheckDoesNotPaintCheckingState();
+    void asecondCheckWhileOneIsRunningIsIgnored();
 
 private:
     // Serve one release payload and wait for the check to settle.
@@ -95,6 +97,44 @@ void TestBackendUpdates::checkFindsNewerVersion()
     QCOMPARE(backend.latestVersion(), QStringLiteral("99.0.0"));
     QVERIFY2(backend.updateMessage().contains(QStringLiteral("99.0.0")),
              qPrintable(backend.updateMessage()));
+    qunsetenv("FT_GITHUB_API_BASE");
+}
+
+// Clicking "Check for updates" twice, or a background timer firing while the
+// user has just asked, must not start two checks. Two guards stand between that
+// and the network — one keeps a single UpdateChecker, the other refuses to start
+// while a check is already in flight — and the sweep found neither was tested.
+//
+// The observation has to be the request count. Once both checks settle, the
+// state, the version and the message all read exactly the same whether one check
+// ran or two, so nothing the Backend exposes can tell them apart.
+void TestBackendUpdates::asecondCheckWhileOneIsRunningIsIgnored()
+{
+    MockHttpServer http;
+    QVERIFY(http.listen());
+    qputenv("FT_GITHUB_API_BASE", http.baseUrl().toUtf8());
+    serveRelease(http, QStringLiteral("v99.0.0"));
+
+    Backend backend;
+    backend.checkForUpdates(true);
+    backend.checkForUpdates(true);   // the impatient second click
+    QTRY_VERIFY_WITH_TIMEOUT(settled(backend), 10000);
+
+    QCOMPARE(backend.updateState(), QStringLiteral("available"));
+    QCOMPARE(http.requestCount(QStringLiteral("/repos/dimmmmmmmer/freetunnel/releases/latest")), 1);
+
+    // And only one updater exists to have made it. ensureUpdater() parents each
+    // one to the Backend, so a missing guard would leave a pile of them wired to
+    // the same signals, every one answering the next check.
+    QCOMPARE(backend.findChildren<UpdateChecker *>().size(), 1);
+
+    // A later check is still allowed — the guard is about concurrency, not a
+    // one-shot latch.
+    backend.checkForUpdates(true);
+    QTRY_VERIFY_WITH_TIMEOUT(settled(backend), 10000);
+    QCOMPARE(http.requestCount(QStringLiteral("/repos/dimmmmmmmer/freetunnel/releases/latest")), 2);
+    QCOMPARE(backend.findChildren<UpdateChecker *>().size(), 1);
+
     qunsetenv("FT_GITHUB_API_BASE");
 }
 

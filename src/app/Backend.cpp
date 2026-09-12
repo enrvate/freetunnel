@@ -8,6 +8,8 @@
 #include <QStandardPaths>
 #include <QThread>
 
+#include <memory>
+
 #include "core/ConfigImport.h"
 #include "core/ConfigStore.h"
 #include "core/ConfigToml.h"
@@ -320,7 +322,21 @@ void Backend::buildConnectTomlAsync()
     const QString path = m_activePath;
     const QString level =
             m_settings.verbose_logs ? QStringLiteral("info") : QStringLiteral("warn");
-    auto *watcher = new QThread(this);
+    // NOT parented to this Backend, and that is the fix for an abort rather than a
+    // style preference. A QThread that is a child of Backend is deleted by
+    // ~QObject, which on a thread still inside the keychain read means QThread's
+    // destructor reaching qFatal("Destroyed while thread is still running") and
+    // the process dying on SIGABRT. The window is exactly the one this function
+    // exists for: the read blocks while macOS asks the user whether this build may
+    // open the item, and quitting while that prompt is up is an ordinary thing to
+    // do. Unparented, nothing destroys it underneath itself; it deletes itself on
+    // finished() below.
+    auto *watcher = new QThread;
+    // Carried out of the worker by value rather than written into a member: the
+    // worker thread must touch no part of Backend, or "nothing destroys it
+    // underneath itself" stops being true in the other direction.
+    auto toml = std::make_shared<QString>();
+    auto builtOn = std::make_shared<QThread *>(nullptr);
     // Qt::DirectConnection is what makes this actually asynchronous, and it is not
     // decoration. A QThread OBJECT lives in the thread that created it — here the
     // GUI thread — so an auto connection to one of its own signals is queued back
@@ -330,17 +346,27 @@ void Backend::buildConnectTomlAsync()
     // the body in the emitting thread, which for started() is the worker.
     QObject::connect(
             watcher, &QThread::started, watcher,
-            [this, watcher, generation, path, level]() {
-#ifdef FT_ENABLE_TEST_HOOKS
-                m_lastTomlBuildThread.store(QThread::currentThread());
-#endif
-                const QString toml = freetunnel::buildConnectConfigToml(path, level);
-                QMetaObject::invokeMethod(
-                        this, [this, generation, toml]() { onConnectTomlReady(generation, toml); },
-                        Qt::QueuedConnection);
+            [watcher, toml, builtOn, path, level]() {
+                *builtOn = QThread::currentThread();
+                *toml = freetunnel::buildConnectConfigToml(path, level);
                 watcher->quit();
             },
             Qt::DirectConnection);
+    // The result hop is a real connection with `this` as receiver, not an
+    // invokeMethod on a pointer the worker holds. That matters for two reasons.
+    // Qt maintains connections under its own mutex and removes this one when
+    // Backend is destroyed, so there is no window in which the worker is about to
+    // post to an object that has just gone; a QPointer checked on the worker
+    // thread cannot promise that, because it is not thread-safe and the object can
+    // die between the check and the use. And `this` lives in the GUI thread, so
+    // the default connection type delivers queued — finished() is emitted in the
+    // worker, the body runs on ours.
+    QObject::connect(watcher, &QThread::finished, this, [this, generation, toml, builtOn]() {
+#ifdef FT_ENABLE_TEST_HOOKS
+        m_lastTomlBuildThread.store(*builtOn);
+#endif
+        onConnectTomlReady(generation, *toml);
+    });
     QObject::connect(watcher, &QThread::finished, watcher, &QObject::deleteLater);
     watcher->start();
 }

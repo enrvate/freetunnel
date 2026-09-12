@@ -395,6 +395,27 @@ void TestBackendConfig::theConnectConfigIsBuiltOffTheGuiThread()
     });
 
     backend.connectVpn();
+
+    // Checked the instant connectVpn() returns, while the worker is certainly
+    // still alive, and deterministic because it asks about ownership rather than
+    // timing: the build worker must not be a child of Backend.
+    //
+    // It used to be `new QThread(this)`. ~QObject then deletes it as part of
+    // Backend's own destruction, and if the thread is still inside the keychain
+    // read QThread's destructor reaches qFatal("Destroyed while thread is still
+    // running") and the process aborts. That is how this test failed on macOS:
+    // its assertions passed, then SIGABRT during teardown. Linux hid it because
+    // the credential read there is microseconds and the worker always won the
+    // race. The same window is reachable in the app — quitting while macOS has
+    // its authorization dialog up, which is the very situation this worker exists
+    // for.
+    QVERIFY2(backend.findChildren<QThread *>().isEmpty(),
+             "the config-build worker must not be parented to Backend: ~QObject would "
+             "delete it mid-read and QThread's destructor calls qFatal");
+
+    // lastTomlBuildThread() is now recorded when the build COMPLETES, not when it
+    // starts, so waiting for it here also means this test can no longer outrun the
+    // worker it started.
     QTRY_VERIFY_WITH_TIMEOUT(backend.lastTomlBuildThread() != nullptr, 10000);
     QVERIFY2(backend.lastTomlBuildThread() != QThread::currentThread(),
              "the connect config was built on the GUI thread — the keychain read blocks it");

@@ -256,14 +256,24 @@ jobs:
           # package (notably nsis) fails to resolve. That used to slip through and
           # only blow up 7 minutes later at the packaging step, so retry the
           # install and verify makensis.exe is actually present before continuing.
+          #
+          # Three attempts 20 s apart tolerates about a minute of trouble, and on
+          # 2026-09-12 the feed answered 503 for nsis on all three: the retry did
+          # exactly what it was written to do and the outage simply outlasted it.
+          # Back off instead. 15/30/60/120 spreads five attempts over roughly four
+          # minutes and costs nothing when the feed is healthy, because the loop
+          # breaks on the first pass.
           $nsis = "C:\Program Files (x86)\NSIS\makensis.exe"
-          for ($i = 1; $i -le 3; $i++) {
+          $backoff = @(15, 30, 60, 120)
+          for ($i = 0; $i -le $backoff.Count; $i++) {
               choco install -y --no-progress strawberryperl nasm nsis
               if (Test-Path $nsis) { break }
-              Write-Host "NSIS not present after attempt $i — retrying in 20s…"
-              Start-Sleep -Seconds 20
+              if ($i -eq $backoff.Count) {
+                  throw "NSIS failed to install via Chocolatey after $($i + 1) attempts"
+              }
+              Write-Host "NSIS not present after attempt $($i + 1) — retrying in $($backoff[$i])s…"
+              Start-Sleep -Seconds $backoff[$i]
           }
-          if (-not (Test-Path $nsis)) { throw "NSIS failed to install via Chocolatey after 3 attempts" }
           pip install -r upstream/requirements.txt
           pip install "conan==$env:CONAN_VER"
 

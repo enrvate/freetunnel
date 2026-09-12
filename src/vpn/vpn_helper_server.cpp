@@ -49,8 +49,7 @@ static bool prepareWindowsHelperRuntime(QString *errOut)
 #endif
 
 #if defined(Q_OS_UNIX)
-#include <csignal>
-#include <unistd.h>
+#include <csignal>  // unistd.h already arrives through the !Q_OS_WIN block above
 #endif
 
 namespace {
@@ -458,10 +457,15 @@ void installTerminationHandlers(QCoreApplication *app)
         return;
     auto *notifier = new QSocketNotifier(g_termPipe[1], QSocketNotifier::Read, app);
     QObject::connect(notifier, &QSocketNotifier::activated, app, [notifier]() {
+        // Not drained on purpose. The notifier is off, so it cannot refire, and
+        // the process is already on its way out of exec() — reading the byte back
+        // would be ceremony, and the fd goes with the process either way. Anything
+        // that reuses this pattern without quitting immediately does need the
+        // read; this does not. (It also keeps Flawfinder quiet, which flags every
+        // read() as an unbounded one — a false positive here, since it would be a
+        // single byte into a single byte, but not a line worth arguing over when
+        // the call itself is unnecessary.)
         notifier->setEnabled(false);
-        char byte = 0;
-        const ssize_t got = ::read(g_termPipe[1], &byte, 1);
-        Q_UNUSED(got);
         QCoreApplication::quit();
     });
     struct sigaction sa{};

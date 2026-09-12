@@ -1,6 +1,7 @@
 import QtQuick
 import QtQuick.Layouts
 import QtQuick.Effects
+import Qt.labs.platform as Platform
 import "../components"
 import ".."
 
@@ -134,6 +135,67 @@ Item {
             }
             Item { Layout.preferredHeight: 16 }
 
+            // ----- Applications (programs that follow the same rule as the addresses) -----
+            RowLayout { Layout.fillWidth: true; spacing: 10
+                SectionLabel { Layout.fillWidth: true; Layout.minimumWidth: 0; elide: Text.ElideRight; theme: settingsRoot.theme; text: qsTr("Applications") }
+                Text { Layout.maximumWidth: 90; elide: Text.ElideRight
+                       text: qsTr("Choose…"); font.pixelSize: 12
+                       color: pickMa.containsMouse ? theme.text : theme.accent; font.underline: pickMa.containsMouse
+                    MouseArea { id: pickMa; anchors.fill: parent; anchors.margins: -4; hoverEnabled: true
+                        cursorShape: Qt.PointingHandCursor; onClicked: appDlg.open() } }
+                Text { Layout.maximumWidth: 80; elide: Text.ElideRight
+                    visible: backend.appRules.length > 0
+                    text: qsTr("Clear all"); font.pixelSize: 12
+                    color: clrApMa.containsMouse ? Qt.lighter(theme.danger, 1.25) : theme.danger
+                    font.underline: clrApMa.containsMouse
+                    MouseArea { id: clrApMa; anchors.fill: parent; anchors.margins: -4; hoverEnabled: true
+                        cursorShape: Qt.PointingHandCursor; onClicked: shell.showConfirm(qsTr("Clear all applications?"),
+                        qsTr("Clear"), function(){ backend.clearAppRules() }) } }
+            }
+            Flow {
+                Layout.fillWidth: true; spacing: 6
+                visible: backend.appRules.length > 0
+                Layout.topMargin: visible ? 6 : 0
+                Repeater {
+                    model: backend.appRules
+                    Rectangle {
+                        id: apChip
+                        required property string modelData
+                        required property int index
+                        radius: 13; color: theme.surface
+                        implicitWidth: alabel.width + 39; implicitHeight: 28
+                        // Elided from the LEFT, unlike the address chips: a rule is
+                        // often a long path whose informative end is the program name,
+                        // so "…/Program Files/Some App/app.exe" reads, where the same
+                        // width cut from the right would show only the drive letter.
+                        Text { id: alabel; anchors.left: parent.left; anchors.leftMargin: 11
+                               anchors.verticalCenter: parent.verticalCenter; text: apChip.modelData
+                               width: Math.min(implicitWidth, 190); elide: Text.ElideLeft
+                               color: theme.text; font.pixelSize: 13 }
+                        ChipX { theme: settingsRoot.theme; anchors.left: alabel.right; anchors.leftMargin: 5
+                                anchors.verticalCenter: parent.verticalCenter
+                                onClicked: backend.removeAppRule(apChip.index) }
+                    }
+                }
+            }
+            Rectangle {
+                Layout.fillWidth: true; Layout.preferredHeight: 36; radius: 8; Layout.topMargin: 6
+                color: theme.inputBg; border.color: apInput.activeFocus ? theme.accent : theme.inputBorder; border.width: 1
+                TextInput {
+                    id: apInput
+                    anchors.fill: parent; anchors.leftMargin: 12; anchors.rightMargin: 12
+                    verticalAlignment: TextInput.AlignVCenter; clip: true
+                    font.pixelSize: 13; color: theme.text
+                    onAccepted: { if (backend.addAppRule(text)) text = "" }
+                    Keys.onEscapePressed: focus = false
+                }
+                Text { anchors.left: parent.left; anchors.leftMargin: 12; anchors.verticalCenter: parent.verticalCenter
+                       anchors.right: parent.right; anchors.rightMargin: 12; elide: Text.ElideRight
+                       text: qsTr("Program name (firefox) or full path, then Enter"); color: theme.textFaint; font.pixelSize: 13
+                       visible: apInput.text.length === 0 && !apInput.activeFocus }
+            }
+            Item { Layout.preferredHeight: 16 }
+
             SectionLabel { text: qsTr("Hotkeys"); theme: settingsRoot.theme }
             RowLayout { Layout.fillWidth: true; Layout.preferredHeight: 42
                 ColumnLayout {
@@ -260,6 +322,23 @@ Item {
                            onClicked: backend.openUrl("https://github.com/TrustTunnel/TrustTunnelClient") } }
             }
             Item { Layout.preferredHeight: 14 }
+        }
+    }
+
+    Platform.FileDialog {
+        id: appDlg
+        title: qsTr("Choose an application")
+        // Windows is the platform where people do not know their program's path,
+        // and the only one where the extension narrows anything down.
+        nameFilters: Qt.platform.os === "windows"
+                     ? [qsTr("Programs (*.exe)"), qsTr("All files (*)")]
+                     : [qsTr("All files (*)")]
+        onAccepted: {
+            // The dialog hands back a file: URL; the rules are plain paths.
+            var path = appDlg.file.toString().replace(/^file:\/\//, "")
+            if (Qt.platform.os === "windows")
+                path = path.replace(/^\//, "")
+            backend.addAppRule(decodeURIComponent(path))
         }
     }
 }

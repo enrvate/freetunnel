@@ -162,6 +162,7 @@ AppSettings loadAppSettings() {
     out.domain_bypass_enabled = s.value("bypass/enabled", true).toBool();
     out.vpn_mode = s.value("bypass/mode", QStringLiteral("general")).toString();
     out.excluded_routes = s.value("routing/excluded_routes", defaultExcludedRoutes()).toStringList();
+    out.app_rules = s.value("routing/app_rules").toStringList();
     loadBypassProfiles(s, out);
     out.hotkeys_enabled = s.value("hotkeys/enabled", true).toBool();
     out.hotkey_toggle = s.value("hotkeys/toggle", "Ctrl+Shift+T").toString();
@@ -186,6 +187,7 @@ void saveAppSettings(const AppSettings &cfg) {
     s.setValue("bypass/enabled", cfg.domain_bypass_enabled);
     s.setValue("bypass/mode", cfg.vpn_mode);
     s.setValue("routing/excluded_routes", cfg.excluded_routes);
+    s.setValue("routing/app_rules", cfg.app_rules);
     s.setValue("bypass/rules", cfg.domain_bypass_rules); // active mirror (core)
     s.setValue("bypass/active_profile", cfg.active_profile);
     s.setValue("bypass/profile_names", QStringList(cfg.profiles.keys()));

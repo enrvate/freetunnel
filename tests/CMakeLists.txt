@@ -133,6 +133,7 @@ set(APP_STARTUP_TEST_SOURCES
     ../src/app/BackendConfigImport.cpp
     ../src/app/BackendConfigShared.cpp
     ../src/app/BackendSplit.cpp
+    ../src/core/AppRules.cpp
     ../src/app/LogModel.cpp
     ../include/app/LogModel.h
     ../src/core/AppSettings.cpp
@@ -194,6 +195,7 @@ set(BACKEND_IMPORT_TEST_SOURCES
     ../src/app/BackendConfigImport.cpp
     ../src/app/BackendConfigShared.cpp
     ../src/app/BackendSplit.cpp
+    ../src/core/AppRules.cpp
     ../src/app/LogModel.cpp
     ../include/app/LogModel.h
     ../src/core/AppSettings.cpp
@@ -514,6 +516,7 @@ set(BACKEND_TEST_SOURCES
     ../src/app/BackendConfigImport.cpp
     ../src/app/BackendConfigShared.cpp
     ../src/app/BackendSplit.cpp
+    ../src/core/AppRules.cpp
     ../src/app/LogModel.cpp
     ../include/app/LogModel.h
     ../src/core/AppSettings.cpp

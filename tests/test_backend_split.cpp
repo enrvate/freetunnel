@@ -33,6 +33,8 @@ private slots:
     void vpnModeIsPersistedAndNormalized();
     void selectiveModeWithNoRulesKeepsTheFullTunnel();
     void selectiveModeIsInactiveWhileSplitIsOff();
+    void appRulesAreRulesToo();
+    void appRulesAreValidatedDedupedAndPersisted();
 
 private:
     QTemporaryDir m_home;
@@ -265,6 +267,75 @@ void TestBackendSplit::selectiveModeWithNoRulesKeepsTheFullTunnel()
     // Bypass mode with no rules is a perfectly ordinary full tunnel, not a leak.
     backend.setVpnMode(QStringLiteral("general"));
     QVERIFY(!backend.selectiveModeWouldLeak());
+}
+
+// "Through VPN" with applications and no domains is a complete configuration:
+// the listed programs go through the tunnel and nothing else does. Before app
+// rules existed, an empty domain list meant "nothing would be routed", so the
+// tunnel fell back to carrying everything — doing that here would silently
+// route the traffic the user had just arranged to keep out.
+void TestBackendSplit::appRulesAreRulesToo()
+{
+    Backend backend;
+    backend.setSplitEnabled(true);
+    backend.setVpnMode(QStringLiteral("selective"));
+    backend.clearDomains();
+    QVERIFY(backend.selectiveModeWouldLeak());
+
+    QVERIFY(backend.addAppRule(QStringLiteral("firefox")));
+    QVERIFY(backend.selectiveModeActive());
+    QVERIFY2(!backend.selectiveModeWouldLeak(),
+             "an app rule is a rule: the mode the user chose is now safe to apply");
+
+    // And removing the last one has to fall back again, exactly as clearing the
+    // domains does.
+    backend.clearAppRules();
+    QVERIFY(!backend.selectiveModeActive());
+    QVERIFY(backend.selectiveModeWouldLeak());
+}
+
+void TestBackendSplit::appRulesAreValidatedDedupedAndPersisted()
+{
+    {
+        Backend backend;
+        QVERIFY(backend.appRules().isEmpty());
+
+        // Rejected, and not stored: the user is told rather than shown a rule
+        // that could never match anything.
+        QVERIFY(!backend.addAppRule(QString()));
+        QVERIFY(!backend.addAppRule(QStringLiteral("   ")));
+        QVERIFY(!backend.addAppRule(QStringLiteral("relative/path")));
+        QVERIFY(backend.appRules().isEmpty());
+
+        QVERIFY(backend.addAppRule(QStringLiteral("  firefox  ")));
+        QCOMPARE(backend.appRules(), QStringList{QStringLiteral("firefox")});
+        // Re-adding the same program is not an error and not a second entry.
+        QVERIFY(!backend.addAppRule(QStringLiteral("firefox")));
+        QCOMPARE(backend.appRules().size(), 1);
+
+        // Unlike an address, a rule is never split on whitespace — program paths
+        // contain spaces, and splitting one would turn a single valid rule into
+        // several invalid ones.
+#ifdef Q_OS_WIN
+        const QString spaced = QStringLiteral("C:\\Program Files\\Some App\\app.exe");
+#else
+        const QString spaced = QStringLiteral("/opt/Some App/app");
+#endif
+        QVERIFY(backend.addAppRule(spaced));
+        QCOMPARE(backend.appRules().size(), 2);
+        QVERIFY(backend.appRules().last().contains(QLatin1String("Some App")));
+
+        backend.removeAppRule(0);
+        QCOMPARE(backend.appRules().size(), 1);
+        // Out-of-range removals must not throw the list away.
+        backend.removeAppRule(-1);
+        backend.removeAppRule(99);
+        QCOMPARE(backend.appRules().size(), 1);
+    }
+
+    Backend reopened;
+    QCOMPARE(reopened.appRules().size(), 1);
+    QVERIFY(reopened.appRules().first().contains(QLatin1String("Some App")));
 }
 
 void TestBackendSplit::selectiveModeIsInactiveWhileSplitIsOff()

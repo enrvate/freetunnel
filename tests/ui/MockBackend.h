@@ -44,6 +44,7 @@ class MockBackend : public QObject {
     Q_PROPERTY(bool selectiveModeWouldLeak READ selectiveModeWouldLeak NOTIFY splitChanged)
     Q_PROPERTY(QStringList domains READ domains NOTIFY splitChanged)
     Q_PROPERTY(QStringList excludedRoutes READ excludedRoutes NOTIFY splitChanged)
+    Q_PROPERTY(QStringList appRules READ appRules NOTIFY splitChanged)
     Q_PROPERTY(QStringList profiles READ profiles NOTIFY splitChanged)
     Q_PROPERTY(QString activeProfile READ activeProfile NOTIFY splitChanged)
     Q_PROPERTY(bool hotkeysSupported READ hotkeysSupported CONSTANT)
@@ -114,6 +115,7 @@ public:
     void setVpnMode(const QString &v);
     QStringList domains() const { return m_domains; }
     QStringList excludedRoutes() const { return m_excludedRoutes; }
+    QStringList appRules() const { return m_appRules; }
     QStringList profiles() const { return m_profiles; }
     QString activeProfile() const { return m_activeProfile; }
 
@@ -170,6 +172,9 @@ public:
     Q_INVOKABLE bool addExcludedRoute(const QString &) { return false; }
     Q_INVOKABLE void removeExcludedRoute(int) {}
     Q_INVOKABLE void clearExcludedRoutes() {}
+    Q_INVOKABLE bool addAppRule(const QString &) { return false; }
+    Q_INVOKABLE void removeAppRule(int) {}
+    Q_INVOKABLE void clearAppRules() {}
     Q_INVOKABLE void restoreDefaultExcludedRoutes() {}
     Q_INVOKABLE void addRecommendedRussia() {}
     Q_INVOKABLE void selectProfile(const QString &) {}
@@ -232,6 +237,10 @@ private:
     QString m_vpnMode = QStringLiteral("general");
     QStringList m_domains;
     QStringList m_excludedRoutes = {QStringLiteral("10.0.0.0/8")};
+    // One bare name and one long path, so the page is rendered with both
+    // shapes a rule can take — the path is what exercises the left elide.
+    QStringList m_appRules = {QStringLiteral("firefox"),
+                              QStringLiteral("/usr/lib/some/very/long/path/to/a/program")};
     QStringList m_profiles = {QStringLiteral("Default")};
     QString m_activeProfile = QStringLiteral("Default");
     bool m_hotkeysSupported = true;

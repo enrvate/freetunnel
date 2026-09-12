@@ -230,6 +230,10 @@
         <source>Update downloaded — closing FreeTunnel to install it</source>
         <translation>Обновление загружено — закрываем FreeTunnel для установки</translation>
     </message>
+    <message>
+        <source>Enter a program name (firefox) or the full path to one</source>
+        <translation>Введите имя программы (firefox) или полный путь к ней</translation>
+    </message>
 </context>
 <context>
     <name>ConfigsPage</name>
@@ -675,6 +679,34 @@
     <message>
         <source>Kill switch</source>
         <translation>Аварийное отключение</translation>
+    </message>
+    <message>
+        <source>Applications</source>
+        <translation>Приложения</translation>
+    </message>
+    <message>
+        <source>Choose…</source>
+        <translation>Выбрать…</translation>
+    </message>
+    <message>
+        <source>Clear all applications?</source>
+        <translation>Очистить список приложений?</translation>
+    </message>
+    <message>
+        <source>Program name (firefox) or full path, then Enter</source>
+        <translation>Имя программы (firefox) или полный путь, затем Enter</translation>
+    </message>
+    <message>
+        <source>Choose an application</source>
+        <translation>Выберите приложение</translation>
+    </message>
+    <message>
+        <source>Programs (*.exe)</source>
+        <translation>Программы (*.exe)</translation>
+    </message>
+    <message>
+        <source>All files (*)</source>
+        <translation>Все файлы (*)</translation>
     </message>
 </context>
 <context>

@@ -55,6 +55,7 @@ class Backend : public QObject {
     Q_PROPERTY(bool selectiveModeWouldLeak READ selectiveModeWouldLeak NOTIFY splitChanged)
     Q_PROPERTY(QStringList domains READ domains NOTIFY splitChanged)
     Q_PROPERTY(QStringList excludedRoutes READ excludedRoutes NOTIFY splitChanged)
+    Q_PROPERTY(QStringList appRules READ appRules NOTIFY splitChanged)
     Q_PROPERTY(QStringList profiles READ profiles NOTIFY splitChanged)
     Q_PROPERTY(QString activeProfile READ activeProfile NOTIFY splitChanged)
     // Global hotkeys (portable key sequences, e.g. "Ctrl+Alt+T"; empty = unbound)
@@ -150,6 +151,11 @@ public:
     Q_INVOKABLE bool addExcludedRoute(const QString &route);
     Q_INVOKABLE void removeExcludedRoute(int index);
     Q_INVOKABLE void clearExcludedRoutes();
+
+    const QStringList &appRules() const { return m_settings.app_rules; }
+    Q_INVOKABLE bool addAppRule(const QString &rule);
+    Q_INVOKABLE void removeAppRule(int index);
+    Q_INVOKABLE void clearAppRules();
     Q_INVOKABLE void restoreDefaultExcludedRoutes();
 
     // Add the built-in "Recommended for Russia" domain set to the active profile.

@@ -1,6 +1,8 @@
 // cppcheck-suppress-file missingIncludeSystem
 #include "app/Backend.h"
 
+#include "core/AppRules.h"
+
 #include <QHostAddress>
 #include <QRegularExpression>
 
@@ -100,6 +102,37 @@ void Backend::clearExcludedRoutes() {
     persistSettings(); applySplitRules(); reapplyIfConnected(); emit splitChanged();
 }
 
+bool Backend::addAppRule(const QString &rule) {
+    // Unlike routes, a rule is NOT split on whitespace: program paths contain
+    // spaces ("C:\\Program Files\\..."), and splitting one would turn a single
+    // valid rule into several invalid ones. One rule per entry, pasted or picked.
+    const QString norm = freetunnel::normalizedAppRule(rule);
+    if (norm.isEmpty()) {
+        emit errorOccurred(tr("Enter a program name (firefox) or the full path to one"));
+        return false;
+    }
+    const Qt::CaseSensitivity cs = freetunnel::appPathCaseSensitivity();
+    for (const QString &existing : std::as_const(m_settings.app_rules)) {
+        if (existing.compare(norm, cs) == 0)
+            return false; // already listed; silently, because re-adding is not an error
+    }
+    m_settings.app_rules << norm;
+    persistSettings(); applySplitRules(); reapplyIfConnected(); emit splitChanged();
+    return true;
+}
+
+void Backend::removeAppRule(int index) {
+    if (index < 0 || index >= m_settings.app_rules.size()) return;
+    m_settings.app_rules.removeAt(index);
+    persistSettings(); applySplitRules(); reapplyIfConnected(); emit splitChanged();
+}
+
+void Backend::clearAppRules() {
+    if (m_settings.app_rules.isEmpty()) return;
+    m_settings.app_rules.clear();
+    persistSettings(); applySplitRules(); reapplyIfConnected(); emit splitChanged();
+}
+
 void Backend::restoreDefaultExcludedRoutes() {
     const QStringList defaults = defaultExcludedRoutes();
     if (m_settings.excluded_routes == defaults)
@@ -190,6 +223,12 @@ QString Backend::activeConfigProfile() const {
 bool Backend::selectiveModeActive() const {
     if (!m_settings.domain_bypass_enabled || m_settings.vpn_mode != QLatin1String("selective"))
         return false;
+    // App rules count as rules. Without this, someone who sets up "Through VPN"
+    // with applications and no domains would be told their configuration routes
+    // nothing and be forced back to the full tunnel — while the app rules alone
+    // are a complete and perfectly reasonable setup.
+    if (!m_settings.app_rules.isEmpty())
+        return true;
     return !coreBypassRules(m_settings.profiles.value(activeConfigProfile())).isEmpty();
 }
 
@@ -222,6 +261,12 @@ void Backend::applySplitRules() {
     std::transform(m_settings.excluded_routes.cbegin(), m_settings.excluded_routes.cend(),
                     std::back_inserter(routes), [](const QString &r) { return r.toStdString(); });
     m_client.setExcludedRoutes(routes);
+
+    std::vector<std::string> appRules;
+    appRules.reserve(static_cast<size_t>(m_settings.app_rules.size()));
+    std::transform(m_settings.app_rules.cbegin(), m_settings.app_rules.cend(),
+                    std::back_inserter(appRules), [](const QString &r) { return r.toStdString(); });
+    m_client.setAppRules(appRules);
 
     // Warned from here rather than from each of the six callers, so no future entry
     // point can forget it. It only fires in the misconfigured state, and every

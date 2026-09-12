@@ -60,6 +60,10 @@ public:
     Q_INVOKABLE void setExcludedRouteStrings(const QStringList &routes);
     void setExtraExclusions(const std::vector<std::string> &exclusions);
     Q_INVOKABLE void setVpnMode(bool selective); // selective = route only the exclusions list
+    // Per-application split tunnelling. The list means the same as the routes
+    // and domains lists: in general mode these apps leave the tunnel, in
+    // selective mode they are the only ones that enter it.
+    Q_INVOKABLE void setAppRules(const QStringList &rules);
     Q_INVOKABLE void setKillSwitch(bool enabled);
     // Whether the core writes a session log at all. The PATH is ours to choose —
     // it is never accepted from outside, see the note in the .cpp.
@@ -155,6 +159,19 @@ private:
     void protectOutboundSocket(ag::SocketProtectEvent *event);
     static int countOpenFds();
     static int getFdLimit();
+
+    // The connect-request handler runs on the core wrapper's own thread and may
+    // still be running while this object is being destroyed, so it must not
+    // capture `this` — which is also why these rules do not live behind
+    // m_configMutex with the rest of the working set. A shared snapshot has no
+    // lifetime question to answer and no lock-ordering relationship with
+    // anything else.
+    struct AppRuleSnapshot {
+        std::mutex mutex;
+        QStringList rules;
+        bool selective = false;
+    };
+    std::shared_ptr<AppRuleSnapshot> m_appRules = std::make_shared<AppRuleSnapshot>();
 
     std::unique_ptr<ag::TrustTunnelClient> m_client;
     std::unique_ptr<ag::AutoNetworkMonitor> m_networkMonitor;

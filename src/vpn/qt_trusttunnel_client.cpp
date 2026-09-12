@@ -2,6 +2,8 @@
 #include "qt_trusttunnel_client.h"
 #include "qt_trusttunnel_platform.h"
 #include "qt_trusttunnel_events.h"
+#include "core/AppRules.h"
+#include "core/ProcessLookup.h"
 #include <QCoreApplication>
 #include <QDir>
 #include <QFile>
@@ -185,10 +187,26 @@ void QtTrustTunnelClient::setConfigLocked(ag::TrustTunnelConfig config) {
 }
 
 void QtTrustTunnelClient::setVpnMode(bool selective) {
-    std::lock_guard<std::mutex> lk(m_configMutex);
-    m_selectiveMode = selective;
-    if (m_config.has_value())
-        m_config->mode = selective ? ag::VPN_MODE_SELECTIVE : ag::VPN_MODE_GENERAL;
+    {
+        std::lock_guard<std::mutex> lk(m_configMutex);
+        m_selectiveMode = selective;
+        if (m_config.has_value())
+            m_config->mode = selective ? ag::VPN_MODE_SELECTIVE : ag::VPN_MODE_GENERAL;
+    }
+    // App rules read the mode the same way the routes and domains lists do, so
+    // it has to reach their snapshot too — otherwise switching mode would flip
+    // every list except this one.
+    std::lock_guard<std::mutex> lk(m_appRules->mutex);
+    m_appRules->selective = selective;
+}
+
+void QtTrustTunnelClient::setAppRules(const QStringList &rules) {
+    // Sanitized here rather than trusted from the IPC: this runs in the
+    // elevated helper, and a rule that cannot match is better dropped than
+    // carried into a routing decision.
+    const QStringList clean = freetunnel::sanitizedAppRules(rules);
+    std::lock_guard<std::mutex> lk(m_appRules->mutex);
+    m_appRules->rules = clean;
 }
 
 void QtTrustTunnelClient::setKillSwitch(bool enabled) {
@@ -426,6 +444,48 @@ ag::VpnCallbacks QtTrustTunnelClient::makeCallbacks(const GuardPtr &guard) {
         std::lock_guard<std::mutex> lk(guard->mutex);
         if (guard->alive)
             postTunnelStats(session, up, down);
+    };
+    // Per-application split tunnelling. This runs on the wrapper's own loop, one
+    // connection at a time, which is what lets it read the system's socket
+    // tables without stalling traffic. It captures a shared snapshot rather than
+    // `this`, because it can still be running while this object is destroyed.
+    auto lookup = std::make_shared<freetunnel::ProcessLookup>();
+    auto appRules = m_appRules;
+    callbacks.connect_request_handler = [appRules, lookup](const ag::VpnConnectRequestSnapshot &req,
+                                                           ag::VpnConnectDecision *decision) {
+        if (decision == nullptr)
+            return;
+        QStringList rules;
+        bool selective = false;
+        {
+            std::lock_guard<std::mutex> lk(appRules->mutex);
+            rules = appRules->rules;
+            selective = appRules->selective;
+        }
+        // No rules means the feature is off, and off must cost nothing: no
+        // table walk, and the same VPN_CA_DEFAULT the wrapper answered before
+        // any of this existed.
+        if (rules.isEmpty())
+            return;
+
+        const freetunnel::LocalFlow flow{req.family, req.proto, req.src_port,
+                                         QString::fromStdString(req.src_ip)};
+        const freetunnel::AppIdentity app = lookup->resolve(flow);
+        switch (freetunnel::appActionFor(app, rules, selective)) {
+        case freetunnel::AppAction::ForceBypass:
+            decision->action = ag::VPN_CA_FORCE_BYPASS;
+            break;
+        case freetunnel::AppAction::ForceTunnel:
+            decision->action = ag::VPN_CA_FORCE_REDIRECT;
+            break;
+        case freetunnel::AppAction::Default:
+            break;
+        }
+        // Name it even when no rule matched: this is what puts the program into
+        // the core's connection log, which is how a user finds out what to
+        // write a rule for in the first place.
+        if (!app.name.isEmpty())
+            decision->app_name = app.name.toStdString();
     };
     callbacks.connection_info_handler = [this, guard, session](ag::VpnConnectionInfoEvent *event) {
         const QString line = qt_trusttunnel_connection_info_line(event);

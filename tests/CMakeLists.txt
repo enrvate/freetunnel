@@ -594,6 +594,8 @@ add_test(NAME vpn_events COMMAND test_vpn_events -o ${CMAKE_CURRENT_BINARY_DIR}/
 add_executable(test_qt_trusttunnel_client
     test_qt_trusttunnel_client.cpp
     ../src/vpn/qt_trusttunnel_client.cpp
+    ../src/core/AppRules.cpp
+    ../src/core/ProcessLookup.cpp
     ../src/vpn/qt_trusttunnel_corelog.cpp
     ../src/vpn/qt_trusttunnel_fdwatch.cpp
     ../src/vpn/qt_trusttunnel_connect.cpp
@@ -707,6 +709,8 @@ add_executable(freetunnel_test_helper
     ../src/vpn/vpn_helper_server.cpp
     ../src/vpn/vpn_helper_launch.cpp
     ../src/vpn/qt_trusttunnel_client.cpp
+    ../src/core/AppRules.cpp
+    ../src/core/ProcessLookup.cpp
     ../src/vpn/qt_trusttunnel_corelog.cpp
     ../src/vpn/qt_trusttunnel_fdwatch.cpp
     ../src/vpn/qt_trusttunnel_connect.cpp

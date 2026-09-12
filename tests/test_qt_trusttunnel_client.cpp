@@ -5,6 +5,17 @@
 // timer thread-affinity and cross-thread command handling are exercised too.
 #include <QtTest>
 
+#include <QCoreApplication>
+#include <QFileInfo>
+#include <QTcpServer>
+
+#ifdef Q_OS_WIN
+#include <winsock2.h>
+#else
+#include <netinet/in.h>
+#include <sys/socket.h>
+#endif
+
 #include <QPointer>
 #include <QSignalSpy>
 #include <QThread>
@@ -74,6 +85,9 @@ private slots:
     }
 
     void connectReachesConnectedAndDisconnects();
+    void anAppRuleTakesItsOwnConnectionOutOfTheTunnel();
+    void selectiveModeSendsAMatchedAppTheOtherWay();
+    void withNoAppRulesNothingIsForcedAndNothingIsLookedUp();
     void staleEventFromPreviousSessionIsIgnored();
     void failedAttemptSchedulesWorkingRetry();
     void coreDropTriggersAutoReconnect();
@@ -146,6 +160,88 @@ void TestQtTrustTunnelClient::connectReachesConnectedAndDisconnects()
     // to Error/Reconnecting from stray callbacks or timers.
     QTest::qWait(600);
     QCOMPARE(m_lastState, State::Disconnected);
+}
+
+// End to end through the real decision path: this test binary opens a real
+// socket, names itself in a rule, and the core asks what to do with that exact
+// connection. Nothing here is stubbed except the core itself — the rule
+// matching and the process lookup are the shipping ones.
+void TestQtTrustTunnelClient::anAppRuleTakesItsOwnConnectionOutOfTheTunnel()
+{
+    auto &ctl = mockcore::Controller::instance();
+    QTcpServer server;
+    QVERIFY(server.listen(QHostAddress::LocalHost, 0));
+
+    m_client->setVpnMode(false); // general: a listed app leaves the tunnel
+    m_client->setAppRules({QFileInfo(QCoreApplication::applicationFilePath()).fileName()});
+
+    beginConnect();
+    QTRY_VERIFY(ctl.connectCallCount() >= 1);
+    const quint64 id = ctl.lastClientId();
+
+    ag::VpnConnectRequestSnapshot req;
+    req.id = 1;
+    req.proto = IPPROTO_TCP;
+    req.family = AF_INET;
+    req.src_port = server.serverPort();
+    req.src_ip = "127.0.0.1";
+
+    const ag::VpnConnectDecision decision = ctl.fireConnectRequest(id, req);
+    QCOMPARE(decision.action, ag::VPN_CA_FORCE_BYPASS);
+    // The program is named back to the core even so, which is what makes it
+    // show up in the connection log a user reads to write the next rule.
+    QCOMPARE(QString::fromStdString(decision.app_name),
+             QFileInfo(QCoreApplication::applicationFilePath()).fileName());
+}
+
+// The same list must mean the opposite thing in the other mode, exactly as the
+// route and domain lists already do.
+void TestQtTrustTunnelClient::selectiveModeSendsAMatchedAppTheOtherWay()
+{
+    auto &ctl = mockcore::Controller::instance();
+    QTcpServer server;
+    QVERIFY(server.listen(QHostAddress::LocalHost, 0));
+
+    m_client->setVpnMode(true);
+    m_client->setAppRules({QFileInfo(QCoreApplication::applicationFilePath()).fileName()});
+
+    beginConnect();
+    QTRY_VERIFY(ctl.connectCallCount() >= 1);
+    const quint64 id = ctl.lastClientId();
+
+    ag::VpnConnectRequestSnapshot req;
+    req.id = 2;
+    req.proto = IPPROTO_TCP;
+    req.family = AF_INET;
+    req.src_port = server.serverPort();
+    req.src_ip = "127.0.0.1";
+
+    QCOMPARE(ctl.fireConnectRequest(id, req).action, ag::VPN_CA_FORCE_REDIRECT);
+}
+
+// With the feature unused, every connection must take exactly the path it took
+// before it existed — and must not pay for a process lookup to find that out.
+void TestQtTrustTunnelClient::withNoAppRulesNothingIsForcedAndNothingIsLookedUp()
+{
+    auto &ctl = mockcore::Controller::instance();
+    QTcpServer server;
+    QVERIFY(server.listen(QHostAddress::LocalHost, 0));
+
+    beginConnect();
+    QTRY_VERIFY(ctl.connectCallCount() >= 1);
+    const quint64 id = ctl.lastClientId();
+
+    ag::VpnConnectRequestSnapshot req;
+    req.id = 3;
+    req.proto = IPPROTO_TCP;
+    req.family = AF_INET;
+    req.src_port = server.serverPort();
+    req.src_ip = "127.0.0.1";
+
+    const ag::VpnConnectDecision decision = ctl.fireConnectRequest(id, req);
+    QCOMPARE(decision.action, ag::VPN_CA_DEFAULT);
+    // No rules, no lookup, so nothing to name either.
+    QVERIFY(decision.app_name.empty());
 }
 
 void TestQtTrustTunnelClient::staleEventFromPreviousSessionIsIgnored()

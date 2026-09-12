@@ -41,6 +41,39 @@ while read -r use; do
 done < <(grep -rhoE 'uses:[[:space:]]*[^[:space:]]+@[^[:space:]]+' .github/workflows \
          | sed -E 's/uses:[[:space:]]*//')
 
+# One toolchain version per repository, not per workflow. Qt and conan were each
+# written out in several workflows; nothing stopped a bump landing in one and not
+# the others, and the failure mode is quiet — a release built against a Qt the
+# tests never ran on. Each workflow now declares it once in `env:`; here we check
+# the declarations agree.
+check_one_value() {
+  local name="$1"
+  local values
+  values="$(grep -rhoE "^  ${name}: '[^']+'" .github/workflows | sort -u)"
+  if [[ -z "$values" ]]; then
+    echo "pinned-deps: no workflow declares ${name}" >&2
+    fail=1
+  elif [[ "$(printf '%s\n' "$values" | wc -l)" -ne 1 ]]; then
+    echo "pinned-deps: workflows disagree on ${name}:" >&2
+    printf '%s\n' "$values" >&2
+    fail=1
+  fi
+}
+
+check_one_value QT_VER
+check_one_value CONAN_VER
+
+# ...and that nothing reintroduces a literal alongside the declaration.
+while read -r line; do
+  echo "pinned-deps: hardcoded Qt version, use \${{ env.QT_VER }}: $line" >&2
+  fail=1
+done < <(grep -rnE "^ +version: '[0-9]" .github/workflows)
+
+while read -r line; do
+  echo "pinned-deps: hardcoded conan version, use CONAN_VER: $line" >&2
+  fail=1
+done < <(grep -rnE 'conan==[0-9]' .github/workflows)
+
 if [[ "$fail" -ne 0 ]]; then
   exit 1
 fi

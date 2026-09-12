@@ -22,6 +22,10 @@ concurrency:
   group: security-${{ github.ref }}-${{ github.event_name }}
   cancel-in-progress: true
 
+env:
+  # Kept identical across workflows; scripts/check-pinned-deps.sh enforces that.
+  QT_VER: '6.8.*'
+
 # Least privilege by default: no job needs to write to the repo except the
 # release job, which asks for contents: write explicitly. Without this the
 # repo/org default applies, handing a write-capable token to every job —
@@ -42,16 +46,29 @@ jobs:
       - name: Run cppcheck
         run: |
           set -eux
+          # Suppressions come from the file, not from this list: they are also
+          # needed by Codacy (which cannot read the file) and by anyone running
+          # cppcheck locally. One copy here is one copy that can go stale.
           cppcheck --error-exitcode=1 \
             --enable=warning,performance,portability \
-            --suppress=missingIncludeSystem \
-            --suppress=unknownMacro \
-            --suppress=passedByValue \
-            --suppress=sizeofwithnumericparameter \
+            --suppressions-list=cppcheck-suppressions.txt \
             --inline-suppr \
             --library=qt \
             -I include -I include/app -I include/core -I include/vpn \
             include src
+
+      - name: Codacy suppressions match the list
+        run: |
+          set -eu
+          # Codacy takes cppcheck flags only from .codacy.yml (engines.cppcheck.
+          # extra_lines), so that copy is unavoidable. What is avoidable is the
+          # two drifting apart and analysis disagreeing with CI for months.
+          missing=0
+          while read -r id; do
+            case "$id" in ''|\#*) continue ;; esac
+            grep -q -- "--suppress=$id\"" .codacy.yml || { echo "::error::$id is suppressed for CI but not in .codacy.yml"; missing=1; }
+          done < cppcheck-suppressions.txt
+          [ "$missing" -eq 0 ]
 
   pinned-deps:
     name: pinned dependency refs
@@ -87,7 +104,7 @@ jobs:
       - name: Install Qt
         uses: jurplel/install-qt-action@48d3ad6db93f3627c8ee7a0454bc6f3744f7e730 # v4
         with:
-          version: '6.8.*'
+          version: ${{ env.QT_VER }}
           host: linux
           target: desktop
           arch: linux_gcc_64

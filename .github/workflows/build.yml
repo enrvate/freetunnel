@@ -36,6 +36,10 @@ env:
   # `conan~=2.12` range was actually resolving to; pinning to 2.12.x instead
   # would have silently downgraded CI by ~19 minor versions.
   CONAN_VER: '2.31.1'
+  # One Qt version per workflow, checked across workflows by
+  # scripts/check-pinned-deps.sh — a release built against a different Qt than
+  # the one the tests ran on is not the thing that was tested.
+  QT_VER: '6.8.*'
   # Opt JS actions onto Node 24 (silences the Node 20 deprecation warning for
   # actions without a Node 24 release yet, e.g. ilammy/msvc-dev-cmd).
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
@@ -240,7 +244,7 @@ jobs:
       - name: Install Qt (aqt)
         uses: jurplel/install-qt-action@48d3ad6db93f3627c8ee7a0454bc6f3744f7e730 # v4
         with:
-          version: '6.8.*'
+          version: ${{ env.QT_VER }}
           host: ${{ matrix.qt_host }}
           target: desktop
           arch: ${{ matrix.qt_arch }}

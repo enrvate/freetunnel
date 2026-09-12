@@ -213,13 +213,18 @@ Codacy still shows **main branch isn't protected** until:
 
 Repository-side hygiene for Codacy:
 
-- [`.codacy.yml`](.codacy.yml) — excludes, **cppcheck `extra_lines`** (Codacy ignores `cppcheck.cfg`), lizard/metric excludes
-- [`cppcheck.cfg`](cppcheck.cfg) — used by local runs and CI security job
+- [`cppcheck-suppressions.txt`](cppcheck-suppressions.txt) — the suppression list
+  CI passes via `--suppressions-list`, and the one to use locally
+- [`.codacy.yml`](.codacy.yml) — excludes, **cppcheck `extra_lines`**, lizard/metric excludes
 - [`scripts/check-pinned-deps.sh`](scripts/check-pinned-deps.sh) — CI-enforced: every third-party
-  Action in `.github/workflows` must be pinned to a full commit SHA (dependabot bumps stay mergeable)
+  Action in `.github/workflows` must be pinned to a full commit SHA (dependabot bumps stay
+  mergeable), and `QT_VER` / `CONAN_VER` must agree across workflows
 
-**Note:** Codacy only picks up cppcheck suppressions via `engines.cppcheck.extra_lines` in
-`.codacy.yml`, not via `cppcheck.cfg` in the repo root.
+**Note:** Codacy takes cppcheck flags only from `engines.cppcheck.extra_lines` in
+`.codacy.yml` — it cannot read a suppressions file. So the ids are written twice
+on purpose, and the cppcheck job fails if the two copies drift apart. (A
+`cppcheck.cfg` in the repo root does nothing: cppcheck has no such auto-loaded
+config file. One used to sit here claiming otherwise.)
 
 Quality gate (default): add **Codacy Static Code Analysis** — already required on `main`.
 

@@ -22,6 +22,12 @@ concurrency:
   group: tests-${{ github.ref }}-${{ github.event_name }}
   cancel-in-progress: true
 
+env:
+  # Kept identical across workflows; scripts/check-pinned-deps.sh enforces that.
+  QT_VER: '6.8.*'
+  # Exact pin, same as build.yml: conan drives every native dependency fetch.
+  CONAN_VER: '2.31.1'
+
 # Least privilege by default: no job needs to write to the repo except the
 # release job, which asks for contents: write explicitly. Without this the
 # repo/org default applies, handing a write-capable token to every job —
@@ -53,7 +59,7 @@ jobs:
         if: runner.os == 'Linux'
         uses: jurplel/install-qt-action@48d3ad6db93f3627c8ee7a0454bc6f3744f7e730 # v4
         with:
-          version: '6.8.*'
+          version: ${{ env.QT_VER }}
           host: linux
           target: desktop
           arch: linux_gcc_64
@@ -76,7 +82,7 @@ jobs:
         if: runner.os == 'Windows'
         uses: jurplel/install-qt-action@48d3ad6db93f3627c8ee7a0454bc6f3744f7e730 # v4
         with:
-          version: '6.8.*'
+          version: ${{ env.QT_VER }}
           host: windows
           target: desktop
           arch: win64_msvc2022_64
@@ -108,12 +114,12 @@ jobs:
           # Vendored, not fetched: this runs as root. See scripts/llvm.sh.
           sudo bash scripts/llvm.sh 18
           sudo apt-get install -y g++-13
-          pip install "conan==2.31.1"
+          pip install "conan==${CONAN_VER}"
 
       - name: Install Qt
         uses: jurplel/install-qt-action@48d3ad6db93f3627c8ee7a0454bc6f3744f7e730 # v4
         with:
-          version: '6.8.*'
+          version: ${{ env.QT_VER }}
           host: linux
           target: desktop
           arch: linux_gcc_64
@@ -177,7 +183,7 @@ jobs:
       - name: Install Qt
         uses: jurplel/install-qt-action@48d3ad6db93f3627c8ee7a0454bc6f3744f7e730 # v4
         with:
-          version: '6.8.*'
+          version: ${{ env.QT_VER }}
           host: linux
           target: desktop
           arch: linux_gcc_64

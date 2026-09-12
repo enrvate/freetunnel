@@ -15,10 +15,18 @@
 
 #include <chrono>
 
+#ifdef _WIN32
+#include <ws2tcpip.h>
+#else
+#include <arpa/inet.h>
+#include <netinet/in.h>
+#endif
+
 class TestVpnEvents : public QObject {
     Q_OBJECT
 
 private slots:
+    void aConnectionWithNoDomainIsNamedByItsAddress();
     void logTailHoldsBackLinesAndFlushesThemWithoutNewInput();
     void logTailBufferIsBounded();
     void payloadComesFromTheStateSpecificErrorSlot();
@@ -339,6 +347,34 @@ void TestVpnEvents::logTailBufferIsBounded()
     QVERIFY2(out.contains(QStringLiteral("complete line")), qPrintable(out.join('|')));
     for (const QString &line : out)
         QVERIFY2(!line.contains(QStringLiteral("xxx")), qPrintable(line));
+}
+
+// "bypass -" told nobody anything. A connection made straight to an address has
+// no domain to print, and that is most of the interesting ones — so print where
+// it went.
+void TestVpnEvents::aConnectionWithNoDomainIsNamedByItsAddress()
+{
+    ag::SocketAddressStorage dst;
+    auto *in4 = reinterpret_cast<sockaddr_in *>(&dst.ss);
+    in4->sin_family = AF_INET;
+    in4->sin_port = htons(443);
+    QVERIFY(inet_pton(AF_INET, "203.0.113.7", &in4->sin_addr) == 1);
+
+    ag::VpnConnectionInfoEvent ev;
+    ev.action = ag::VPN_FCA_BYPASS;
+    ev.domain = nullptr;
+    ev.dst = &dst;
+    QCOMPARE(qt_trusttunnel_connection_info_line(&ev), QStringLiteral("bypass 203.0.113.7:443"));
+
+    // A domain, when there is one, still wins: it is what a person recognises.
+    ev.domain = "example.com";
+    QCOMPARE(qt_trusttunnel_connection_info_line(&ev), QStringLiteral("bypass example.com"));
+
+    // And with neither, say so rather than printing a bare action.
+    ev.domain = nullptr;
+    ev.dst = nullptr;
+    QCOMPARE(qt_trusttunnel_connection_info_line(&ev),
+             QStringLiteral("bypass unknown destination"));
 }
 
 QTEST_MAIN(TestVpnEvents)

@@ -51,6 +51,12 @@ void TestAppShortcut::readsTheProgramOutOfADesktopEntry_data()
     QTest::newRow("env wrapper")
             << QStringLiteral("[Desktop Entry]\nExec=env GDK_BACKEND=x11 /usr/bin/signal-desktop %u\n")
             << QStringLiteral("/usr/bin/signal-desktop");
+    // The assignment's VALUE is a path here. Testing for a slash anywhere in the
+    // token returned "LD_PRELOAD=/opt/lib/pre.so" as the program, which resolves
+    // to nothing — so the application could not be added as a rule at all.
+    QTest::newRow("env assignment whose value is a path")
+            << QStringLiteral("[Desktop Entry]\nExec=env LD_PRELOAD=/opt/lib/pre.so /usr/bin/app %u\n")
+            << QStringLiteral("/usr/bin/app");
     QTest::newRow("bare name") << QStringLiteral("[Desktop Entry]\nExec=firefox %u\n")
                                << QStringLiteral("firefox");
     QTest::newRow("no exec") << QStringLiteral("[Desktop Entry]\nName=Thing\n") << QString();

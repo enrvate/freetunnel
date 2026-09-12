@@ -21,8 +21,11 @@ struct InstalledApp {
 // has several entries — a Flatpak and a distribution package, or a Start Menu
 // shortcut in both the machine-wide and the per-user tree.
 //
-// Slow enough to be worth doing off the interface thread: on Windows every
-// shortcut has to be resolved through the shell to find out what it points at.
+// Called synchronously, from the interface thread, when the picker opens. The
+// cost is measured rather than assumed on Linux — about 8 ms for a hundred
+// applications — but NOT on Windows, where every Start Menu shortcut is
+// resolved through the shell to find out what it points at. If that turns out
+// to stall the picker, this is the call to move to a worker.
 QList<InstalledApp> installedApplications();
 
 // Whether an entry should be offered to a person at all. Entries exist that are

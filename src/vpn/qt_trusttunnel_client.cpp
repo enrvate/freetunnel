@@ -339,12 +339,24 @@ QtTrustTunnelClient::State QtTrustTunnelClient::state() const {
 }
 
 void QtTrustTunnelClient::setLogLevel(const QString &level) {
-    std::lock_guard<std::mutex> lk(m_configMutex);
-    m_logLevel = qt_trusttunnel_parse_log_level(level);
-    ag::Logger::set_log_level(m_logLevel);
-    if (m_config.has_value()) {
-        m_config->loglevel = m_logLevel;
+    {
+        std::lock_guard<std::mutex> lk(m_configMutex);
+        m_logLevel = qt_trusttunnel_parse_log_level(level);
+        ag::Logger::set_log_level(m_logLevel);
+        if (m_config.has_value()) {
+            m_config->loglevel = m_logLevel;
+        }
     }
+    // The per-connection handler reads this from its own snapshot rather than
+    // the config, for the same reason it reads the rules there: it must not
+    // depend on this object still existing.
+    std::lock_guard<std::mutex> lk(m_appRules->mutex);
+    // "info" and not "debug": that is what the Verbose logs switch actually
+    // sends (BackendSettings.cpp sends info when on, warn when off). Checking
+    // for debug here would have made this dead code.
+    const QString l = level.toLower();
+    m_appRules->verbose = l == QLatin1String("info") || l == QLatin1String("debug")
+            || l == QLatin1String("trace");
 }
 
 void QtTrustTunnelClient::setExcludedRoutes(const std::vector<std::string> &excludeRoutes) {
@@ -447,8 +459,9 @@ ag::VpnCallbacks QtTrustTunnelClient::makeCallbacks(const GuardPtr &guard) {
     };
     // Per-application split tunnelling. This runs on the wrapper's own loop, one
     // connection at a time, which is what lets it read the system's socket
-    // tables without stalling traffic. It captures a shared snapshot rather than
-    // `this`, because it can still be running while this object is destroyed.
+    // tables without stalling traffic. The rules come from a shared snapshot so
+    // the lookup needs no lock on this object; `this` is touched only at the
+    // end, to log, and only under the liveness guard.
     auto lookup = std::make_shared<freetunnel::ProcessLookup>();
     auto appRules = m_appRules;
     callbacks.connect_request_handler = [this, guard, session, appRules,
@@ -458,10 +471,12 @@ ag::VpnCallbacks QtTrustTunnelClient::makeCallbacks(const GuardPtr &guard) {
             return;
         QStringList rules;
         bool selective = false;
+        bool verbose = false;
         {
             std::lock_guard<std::mutex> lk(appRules->mutex);
             rules = appRules->rules;
             selective = appRules->selective;
+            verbose = appRules->verbose;
         }
         // No rules means the feature is off, and off must cost nothing: no
         // table walk, and the same VPN_CA_DEFAULT the wrapper answered before
@@ -492,6 +507,13 @@ ag::VpnCallbacks QtTrustTunnelClient::makeCallbacks(const GuardPtr &guard) {
         // unobservable: a rule that never matched and a rule that matched and
         // was overruled look identical from outside, and the first question
         // anyone asks — "did it even see my program?" — has no answer.
+        const bool routed = decision->action == ag::VPN_CA_FORCE_BYPASS
+                || decision->action == ag::VPN_CA_FORCE_REDIRECT;
+        // A connection nobody wrote a rule for is the overwhelming majority, and
+        // logging those buries the handful that matter under every program on
+        // the machine. Verbose is where that question gets answered.
+        if (!routed && !verbose)
+            return;
         const QString who = app.name.isEmpty()
                 ? QStringLiteral("unknown (port %1)").arg(req.src_port)
                 : app.name;

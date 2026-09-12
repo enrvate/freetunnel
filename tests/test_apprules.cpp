@@ -203,7 +203,10 @@ void TestAppRules::aRuleMeansTheApplicationNotOneBinaryInsideIt()
     const QString picked = QStringLiteral("/Applications/ChatGPT.app/Contents/MacOS/ChatGPT");
     const QStringList rules{picked};
 
-    QCOMPARE(freetunnel::appBundleOf(picked), QStringLiteral("/Applications/ChatGPT.app"));
+    // Compared through toNativeSeparators: the function normalises separators,
+    // so a forward-slash literal is only equal to it on Unix.
+    QCOMPARE(freetunnel::appBundleOf(picked),
+             QDir::toNativeSeparators(QStringLiteral("/Applications/ChatGPT.app")));
 
     // The process the socket actually belongs to.
     const QString helper = QStringLiteral(

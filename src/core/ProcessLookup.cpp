@@ -2,6 +2,7 @@
 #include "core/ProcessLookup.h"
 
 #include <QDir>
+#include <QtGlobal>
 #include <QFile>
 #include <QFileInfo>
 
@@ -250,10 +251,15 @@ void ProcessLookup::refreshIfStale()
             if (fds[f].proc_fdtype != PROX_FDTYPE_SOCKET)
                 continue;
             socket_fdinfo si = {};
-            if (::proc_pidfdinfo(pid, fds[f].proc_fd, PROC_PIDFDSOCKETINFO, &si, sizeof(si))
-                    != sizeof(si)) {
+            // Accepts a short write rather than demanding exactly sizeof(si).
+            // The kernel fills as much of the struct as its own ABI knows, and
+            // an SDK newer than the kernel makes an equality check reject every
+            // socket on the machine — which looks exactly like "no program owns
+            // this connection" rather than like a broken scan.
+            const int got = ::proc_pidfdinfo(pid, fds[f].proc_fd, PROC_PIDFDSOCKETINFO, &si,
+                                             sizeof(si));
+            if (got < static_cast<int>(sizeof(si.psi.soi_family) + sizeof(si.psi.soi_kind)))
                 continue;
-            }
             const int family = si.psi.soi_family;
             if (family != AF_INET && family != AF_INET6)
                 continue;
@@ -274,6 +280,18 @@ void ProcessLookup::refreshIfStale()
         }
     }
 
+    if (m_owners.isEmpty()) {
+        // Said once per session, not per connection: this is the difference
+        // between "that program could not be identified" and "no program on
+        // this machine can be", and only the second is a bug in here.
+        static bool warned = false;
+        if (!warned) {
+            warned = true;
+            qWarning("process lookup found no sockets at all — every connection will read as "
+                     "unknown (scanned %d pids)",
+                     nPids);
+        }
+    }
     m_builtAt = now;
     m_everBuilt = true;
 }

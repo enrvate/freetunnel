@@ -161,15 +161,25 @@ private:
     static int getFdLimit();
 
     // The connect-request handler runs on the core wrapper's own thread and may
-    // still be running while this object is being destroyed, so it must not
-    // capture `this` — which is also why these rules do not live behind
-    // m_configMutex with the rest of the working set. A shared snapshot has no
-    // lifetime question to answer and no lock-ordering relationship with
-    // anything else.
+    // still be running while this object is being destroyed. It DOES capture
+    // `this`, to write its decision to the log, and is safe only because it
+    // reaches back the way every other callback here does: under the liveness
+    // guard, checking alive. Do not remove that check.
+    //
+    // The rules live in this shared snapshot rather than behind m_configMutex
+    // because the handler reads them on every connection, before and outside
+    // that guard — a lookup can be slow, and holding the object's lock across
+    // it would stall teardown.
     struct AppRuleSnapshot {
         std::mutex mutex;
         QStringList rules;
         bool selective = false;
+        // Every connection asks the handler something, so logging all of them
+        // buries the log in programs nobody wrote a rule for. Decisions that
+        // actually routed something are always logged; the rest only when the
+        // user has asked for verbose logs, which is exactly when "what program
+        // is this connection?" is the question being investigated.
+        bool verbose = false;
     };
     std::shared_ptr<AppRuleSnapshot> m_appRules = std::make_shared<AppRuleSnapshot>();
 

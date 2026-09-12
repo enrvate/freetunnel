@@ -133,7 +133,11 @@ QString resolveWindowsShortcut(const QString &lnkPath)
         link->Release();
     }
 
-    if (weInitialised && init != S_FALSE)
+    // Every successful CoInitializeEx must be balanced, S_FALSE included — that
+    // return means COM was already up on this thread AND this call still took a
+    // reference. Skipping it leaked one per shortcut, and the Start Menu scan
+    // makes hundreds of these calls.
+    if (weInitialised)
         ::CoUninitialize();
     if (result.isEmpty() || !QFileInfo(result).exists())
         return {};
@@ -252,7 +256,13 @@ QString executableFromDesktopEntry(const QString &contents)
         // assignments to reach the program actually being launched.
         if (token == QLatin1String("env"))
             continue;
-        if (token.contains(QLatin1Char('=')) && !token.contains(QLatin1Char('/')))
+        // An assignment is one whose '=' comes before any '/'. Testing merely
+        // for a slash anywhere got "LD_PRELOAD=/opt/lib/pre.so" wrong: the
+        // whole token was returned as the program, resolved to nothing, and the
+        // application was silently unusable as a rule.
+        const qsizetype eq = token.indexOf(QLatin1Char('='));
+        const qsizetype slash = token.indexOf(QLatin1Char('/'));
+        if (eq > 0 && (slash < 0 || eq < slash))
             continue;
         return token;
     }

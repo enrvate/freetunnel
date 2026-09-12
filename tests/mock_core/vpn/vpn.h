@@ -98,9 +98,18 @@ struct VpnTunnelConnectionStatsEvent {
     uint64_t download = 0;
 };
 
+// Mirrors the real type closely enough for the one thing FreeTunnel asks of it:
+// hand back a sockaddr to format.
+struct SocketAddressStorage {
+    sockaddr_storage ss = {};
+    const sockaddr *c_sockaddr() const { return reinterpret_cast<const sockaddr *>(&ss); }
+};
+
 struct VpnConnectionInfoEvent {
     int action = VPN_FCA_TUNNEL;
     const char *domain = nullptr;
+    const SocketAddressStorage *src = nullptr;
+    const SocketAddressStorage *dst = nullptr;
 };
 
 struct SocketProtectEvent {

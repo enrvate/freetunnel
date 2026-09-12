@@ -644,12 +644,29 @@ jobs:
           SetFile -a C "$MOUNT/.VolumeIcon.icns"
           ln -sf /Applications "$MOUNT/Applications"
           bless --folder "$MOUNT" --openfolder "$MOUNT" --icon "$MOUNT/.VolumeIcon.icns" || true
-          # Spotlight/fseventsd can hold the volume briefly — retry the detach.
+          # Spotlight/fseventsd can hold the volume briefly — retry the detach,
+          # but judge the OUTCOME rather than the exit status. The first detach can
+          # report "Resource busy" and still complete a moment later, after which
+          # every retry fails with "No such file or directory" — which is the state
+          # we were asking for. The old loop read that as failure, and its
+          # unguarded -force on the last attempt then killed a release build under
+          # set -eux for having nothing left to do:
+          #
+          #   hdiutil: couldn't eject "disk5" - Resource busy
+          #   hdiutil: detach failed - No such file or directory   (x4, then -force)
+          #   ##[error]Process completed with exit code 1
           for i in 1 2 3 4 5; do
-            if hdiutil detach "$MOUNT"; then break; fi
-            if [ "$i" = 5 ]; then hdiutil detach "$MOUNT" -force; fi
+            [ -d "$MOUNT" ] || break
+            if hdiutil detach "$MOUNT" >/dev/null 2>&1; then break; fi
+            if [ "$i" = 5 ]; then
+              hdiutil detach "$MOUNT" -force >/dev/null 2>&1 || true
+            fi
             sleep 5
           done
+          if [ -d "$MOUNT" ]; then
+            echo "::error::DMG volume still mounted at $MOUNT after five detach attempts"
+            exit 1
+          fi
           hdiutil convert "$RW" -format UDZO -imagekey zlib-level=9 -o out/${{ matrix.artifact }}.dmg
           rm -f "$RW"
 

@@ -98,6 +98,7 @@ add_executable(FreeTunnel WIN32 MACOSX_BUNDLE
     src/core/AppSettings.cpp
     include/core/AppSettings.h
     src/core/AppRules.cpp
+    src/core/AppShortcut.cpp
     src/core/BypassRules.cpp
     include/core/BypassRules.h
     src/core/ConfigStore.cpp
@@ -256,7 +257,8 @@ if (WIN32)
     # shell32 for ShellExecuteExW.
     # iphlpapi: GetExtendedTcpTable/GetExtendedUdpTable, which is how per-app
     # split tunnelling finds the process behind a connection on Windows.
-    target_link_libraries(FreeTunnel PRIVATE shell32 iphlpapi)
+    # ole32/uuid: IShellLink, which is how a dropped .lnk is followed to its target.
+    target_link_libraries(FreeTunnel PRIVATE shell32 iphlpapi ole32 uuid)
 endif()
 
 # OpenSSL for in-app Ed25519 verification (UpdateChecker). On Linux the VPN

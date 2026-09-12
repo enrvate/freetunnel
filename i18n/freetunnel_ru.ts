@@ -234,6 +234,10 @@
         <source>Enter a program name (firefox) or the full path to one</source>
         <translation>Введите имя программы (firefox) или полный путь к ней</translation>
     </message>
+    <message>
+        <source>That is not a program. Drop an application, or a shortcut to one.</source>
+        <translation>Это не программа. Перетащите приложение или ярлык на него.</translation>
+    </message>
 </context>
 <context>
     <name>ConfigsPage</name>
@@ -693,20 +697,28 @@
         <translation>Очистить список приложений?</translation>
     </message>
     <message>
-        <source>Program name (firefox) or full path, then Enter</source>
-        <translation>Имя программы (firefox) или полный путь, затем Enter</translation>
-    </message>
-    <message>
         <source>Choose an application</source>
         <translation>Выберите приложение</translation>
     </message>
     <message>
-        <source>Programs (*.exe)</source>
-        <translation>Программы (*.exe)</translation>
-    </message>
-    <message>
         <source>All files (*)</source>
         <translation>Все файлы (*)</translation>
+    </message>
+    <message>
+        <source>Drop to add this application</source>
+        <translation>Отпустите, чтобы добавить это приложение</translation>
+    </message>
+    <message>
+        <source>Drop an application here, or type its name and press Enter</source>
+        <translation>Перетащите приложение сюда или введите имя и нажмите Enter</translation>
+    </message>
+    <message>
+        <source>Programs and shortcuts (*.exe *.lnk)</source>
+        <translation>Программы и ярлыки (*.exe *.lnk)</translation>
+    </message>
+    <message>
+        <source>Applications (*.desktop *.app)</source>
+        <translation>Приложения (*.desktop *.app)</translation>
     </message>
 </context>
 <context>

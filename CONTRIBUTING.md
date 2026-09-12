@@ -52,10 +52,13 @@ endif ()
 From the upstream root:
 
 ```bash
-patch -p1 < FreeTunnel/vendor/trusttunnel/tunnel-stats-handler.patch
+for p in FreeTunnel/vendor/trusttunnel/*.patch; do patch -p1 < "$p"; done
 ```
 
-Required for live upload/download stats in the UI. Verified in CI via
+The patches are numbered because they are not independent — each one's context
+lines assume the previous is applied, so apply them in filename order. Today
+there are two: live upload/download stats in the UI, and the per-connection hook
+that per-application split tunnelling decides on. Verified in CI via
 `FreeTunnel/scripts/verify_upstream_patch.sh`.
 
 ### 3. Bootstrap Conan deps

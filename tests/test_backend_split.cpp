@@ -10,7 +10,9 @@
 
 #include <QSignalSpy>
 #include <QStandardPaths>
+#include <QDir>
 #include <QTemporaryDir>
+#include <QUrl>
 
 #include "app/Backend.h"
 #include "core/AppSettings.h"
@@ -35,6 +37,7 @@ private slots:
     void selectiveModeIsInactiveWhileSplitIsOff();
     void appRulesAreRulesToo();
     void appRulesAreValidatedDedupedAndPersisted();
+    void aDroppedShortcutBecomesARuleForTheProgramItNames();
 
 private:
     QTemporaryDir m_home;
@@ -336,6 +339,41 @@ void TestBackendSplit::appRulesAreValidatedDedupedAndPersisted()
     Backend reopened;
     QCOMPARE(reopened.appRules().size(), 1);
     QVERIFY(reopened.appRules().first().contains(QLatin1String("Some App")));
+}
+
+// Dropping an icon is the gesture people actually have. What lands on the window
+// is a shortcut, not a program, and a rule made from the shortcut's own path
+// would be stored, listed back, and never match anything.
+void TestBackendSplit::aDroppedShortcutBecomesARuleForTheProgramItNames()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString program = dir.filePath(QStringLiteral("theprogram"));
+    QFile bin(program);
+    QVERIFY(bin.open(QIODevice::WriteOnly));
+    bin.close();
+
+    const QString entry = dir.filePath(QStringLiteral("shortcut.desktop"));
+    QFile f(entry);
+    QVERIFY(f.open(QIODevice::WriteOnly | QIODevice::Text));
+    f.write(QStringLiteral("[Desktop Entry]\nType=Application\nExec=\"%1\" %u\n")
+                    .arg(program).toUtf8());
+    f.close();
+
+    Backend backend;
+    QSignalSpy errors(&backend, &Backend::errorOccurred);
+
+    // The URL form, because that is what a drop hands over.
+    QVERIFY(backend.addApplicationFromPath(QUrl::fromLocalFile(entry).toString()));
+    QCOMPARE(backend.appRules().size(), 1);
+    QCOMPARE(backend.appRules().first(), QDir::toNativeSeparators(program));
+    QCOMPARE(errors.count(), 0);
+
+    // A folder or a document landing on the window by accident is told apart from
+    // a program, and says so rather than storing something unmatchable.
+    QVERIFY(!backend.addApplicationFromPath(QUrl::fromLocalFile(dir.path()).toString()));
+    QCOMPARE(backend.appRules().size(), 1);
+    QCOMPARE(errors.count(), 1);
 }
 
 void TestBackendSplit::selectiveModeIsInactiveWhileSplitIsOff()

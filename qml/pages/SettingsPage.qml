@@ -164,13 +164,13 @@ Item {
                         required property int index
                         radius: 13; color: theme.surface
                         implicitWidth: alabel.width + 39; implicitHeight: 28
-                        // Elided from the LEFT, unlike the address chips: a rule is
-                        // often a long path whose informative end is the program name,
-                        // so "…/Program Files/Some App/app.exe" reads, where the same
-                        // width cut from the right would show only the drive letter.
+                        // Just the program. A rule may be a long path, but the path
+                        // is how the rule is stored, not what the person recognises —
+                        // they added Firefox, so the chip says firefox.
                         Text { id: alabel; anchors.left: parent.left; anchors.leftMargin: 11
-                               anchors.verticalCenter: parent.verticalCenter; text: apChip.modelData
-                               width: Math.min(implicitWidth, 190); elide: Text.ElideLeft
+                               anchors.verticalCenter: parent.verticalCenter
+                               text: apChip.modelData.split(/[\\/]/).pop()
+                               width: Math.min(implicitWidth, 190); elide: Text.ElideRight
                                color: theme.text; font.pixelSize: 13 }
                         ChipX { theme: settingsRoot.theme; anchors.left: alabel.right; anchors.leftMargin: 5
                                 anchors.verticalCenter: parent.verticalCenter
@@ -179,8 +179,11 @@ Item {
                 }
             }
             Rectangle {
+                id: apField
                 Layout.fillWidth: true; Layout.preferredHeight: 36; radius: 8; Layout.topMargin: 6
-                color: theme.inputBg; border.color: apInput.activeFocus ? theme.accent : theme.inputBorder; border.width: 1
+                color: apDrop.containsDrag ? theme.surface : theme.inputBg
+                border.width: 1
+                border.color: apDrop.containsDrag || apInput.activeFocus ? theme.accent : theme.inputBorder
                 TextInput {
                     id: apInput
                     anchors.fill: parent; anchors.leftMargin: 12; anchors.rightMargin: 12
@@ -191,8 +194,25 @@ Item {
                 }
                 Text { anchors.left: parent.left; anchors.leftMargin: 12; anchors.verticalCenter: parent.verticalCenter
                        anchors.right: parent.right; anchors.rightMargin: 12; elide: Text.ElideRight
-                       text: qsTr("Program name (firefox) or full path, then Enter"); color: theme.textFaint; font.pixelSize: 13
+                       text: apDrop.containsDrag ? qsTr("Drop to add this application")
+                                                 : qsTr("Drop an application here, or type its name and press Enter")
+                       color: apDrop.containsDrag ? theme.accent : theme.textFaint; font.pixelSize: 13
                        visible: apInput.text.length === 0 && !apInput.activeFocus }
+                // Dropping the icon is the natural gesture, and it is the only one
+                // that works for someone who does not know where their program
+                // lives. Whatever lands here — the program, a .desktop entry, a
+                // .lnk, an .app bundle — the backend follows it to the executable.
+                DropArea {
+                    id: apDrop
+                    anchors.fill: parent
+                    keys: ["text/uri-list"]
+                    onDropped: function(drop) {
+                        if (!drop.hasUrls) { drop.accepted = false; return }
+                        for (var i = 0; i < drop.urls.length; ++i)
+                            backend.addApplicationFromPath(drop.urls[i].toString())
+                        drop.accepted = true
+                    }
+                }
             }
             Item { Layout.preferredHeight: 16 }
 
@@ -330,15 +350,12 @@ Item {
         title: qsTr("Choose an application")
         // Windows is the platform where people do not know their program's path,
         // and the only one where the extension narrows anything down.
+        // Shortcuts are offered alongside programs on purpose: the Start menu and
+        // the desktop are full of them, and they are what a person can actually
+        // find. The backend resolves whichever one is chosen.
         nameFilters: Qt.platform.os === "windows"
-                     ? [qsTr("Programs (*.exe)"), qsTr("All files (*)")]
-                     : [qsTr("All files (*)")]
-        onAccepted: {
-            // The dialog hands back a file: URL; the rules are plain paths.
-            var path = appDlg.file.toString().replace(/^file:\/\//, "")
-            if (Qt.platform.os === "windows")
-                path = path.replace(/^\//, "")
-            backend.addAppRule(decodeURIComponent(path))
-        }
+                     ? [qsTr("Programs and shortcuts (*.exe *.lnk)"), qsTr("All files (*)")]
+                     : [qsTr("Applications (*.desktop *.app)"), qsTr("All files (*)")]
+        onAccepted: backend.addApplicationFromPath(appDlg.file.toString())
     }
 }

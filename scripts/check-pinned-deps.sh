@@ -74,6 +74,16 @@ while read -r line; do
   fail=1
 done < <(grep -rnE 'conan==[0-9]' .github/workflows)
 
+# The vendored patches are applied in four places (this repo's two scripts, the
+# build workflow, and CONTRIBUTING). Naming one patch file in any of them is how
+# adding a second patch, or renaming the first, silently stops applying one —
+# which is exactly what happened. Everything must glob the directory.
+while read -r line; do
+  echo "pinned-deps: hardcoded patch filename, glob vendor/trusttunnel/*.patch instead: $line" >&2
+  fail=1
+done < <(grep -rn 'vendor/trusttunnel/[A-Za-z0-9_.-]*\.patch' \
+           .github/workflows scripts CONTRIBUTING.md 2>/dev/null)
+
 if [[ "$fail" -ne 0 ]]; then
   exit 1
 fi

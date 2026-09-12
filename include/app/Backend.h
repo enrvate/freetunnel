@@ -154,6 +154,10 @@ public:
 
     const QStringList &appRules() const { return m_settings.app_rules; }
     Q_INVOKABLE bool addAppRule(const QString &rule);
+    // Whatever was dropped on the window or picked in the dialog: a program, a
+    // .desktop entry, a .lnk shortcut, an .app bundle. Resolved to the program
+    // it stands for, because that is the only name a rule can match.
+    Q_INVOKABLE bool addApplicationFromPath(const QString &pathOrUrl);
     Q_INVOKABLE void removeAppRule(int index);
     Q_INVOKABLE void clearAppRules();
     Q_INVOKABLE void restoreDefaultExcludedRoutes();

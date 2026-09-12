@@ -172,7 +172,15 @@ jobs:
 
       - name: Patch core wrapper (surface tunnel stats)
         shell: bash
-        run: patch -p1 -d upstream < client/vendor/trusttunnel/tunnel-stats-handler.patch
+        run: |
+          set -eu
+          # Every vendored patch, in filename order — they build on each other's
+          # context, which is why they are numbered. Naming one file here is what
+          # broke the build when a second patch was added and the first was renamed.
+          for p in client/vendor/trusttunnel/*.patch; do
+            echo "==> $(basename "$p")"
+            patch -p1 -d upstream < "$p"
+          done
 
       # quiche (HTTP/3) is built from Rust by conan; ensure a toolchain exists on
       # every runner (macOS/Windows ship one, but install to be safe + on PATH).

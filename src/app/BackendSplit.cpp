@@ -2,6 +2,7 @@
 #include "app/Backend.h"
 
 #include "core/AppRules.h"
+#include "core/AppShortcut.h"
 
 #include <QHostAddress>
 #include <QRegularExpression>
@@ -119,6 +120,17 @@ bool Backend::addAppRule(const QString &rule) {
     m_settings.app_rules << norm;
     persistSettings(); applySplitRules(); reapplyIfConnected(); emit splitChanged();
     return true;
+}
+
+bool Backend::addApplicationFromPath(const QString &pathOrUrl) {
+    const QString target = freetunnel::resolveApplicationTarget(pathOrUrl);
+    if (target.isEmpty()) {
+        // Said plainly, because the common case is a document or a folder landing
+        // on the window by accident, and "invalid rule" would not explain that.
+        emit errorOccurred(tr("That is not a program. Drop an application, or a shortcut to one."));
+        return false;
+    }
+    return addAppRule(target);
 }
 
 void Backend::removeAppRule(int index) {

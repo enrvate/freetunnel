@@ -173,6 +173,7 @@ public:
     Q_INVOKABLE void removeExcludedRoute(int) {}
     Q_INVOKABLE void clearExcludedRoutes() {}
     Q_INVOKABLE bool addAppRule(const QString &) { return false; }
+    Q_INVOKABLE bool addApplicationFromPath(const QString &) { return false; }
     Q_INVOKABLE void removeAppRule(int) {}
     Q_INVOKABLE void clearAppRules() {}
     Q_INVOKABLE void restoreDefaultExcludedRoutes() {}

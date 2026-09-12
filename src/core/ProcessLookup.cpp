@@ -28,6 +28,8 @@ namespace freetunnel {
 
 namespace {
 
+// ntohs is called unqualified on purpose: on Darwin it is a macro
+// (__DARWIN_OSSwapInt16), and ::ntohs does not parse there.
 constexpr std::uint32_t ownerKey(int proto, std::uint16_t port)
 {
     return (static_cast<std::uint32_t>(proto) << 16) | port;
@@ -169,7 +171,7 @@ void ProcessLookup::refreshIfStale()
             [](const MIB_TCPTABLE_OWNER_PID *t, QHash<std::uint32_t, qint64> *owners, int proto) {
                 for (DWORD i = 0; i < t->dwNumEntries; ++i) {
                     const auto &row = t->table[i];
-                    owners->insert(ownerKey(proto, ::ntohs(static_cast<u_short>(row.dwLocalPort))),
+                    owners->insert(ownerKey(proto, ntohs(static_cast<u_short>(row.dwLocalPort))),
                             static_cast<qint64>(row.dwOwningPid));
                 }
             });
@@ -177,7 +179,7 @@ void ProcessLookup::refreshIfStale()
             [](const MIB_TCP6TABLE_OWNER_PID *t, QHash<std::uint32_t, qint64> *owners, int proto) {
                 for (DWORD i = 0; i < t->dwNumEntries; ++i) {
                     const auto &row = t->table[i];
-                    owners->insert(ownerKey(proto, ::ntohs(static_cast<u_short>(row.dwLocalPort))),
+                    owners->insert(ownerKey(proto, ntohs(static_cast<u_short>(row.dwLocalPort))),
                             static_cast<qint64>(row.dwOwningPid));
                 }
             });
@@ -185,7 +187,7 @@ void ProcessLookup::refreshIfStale()
             [](const MIB_UDPTABLE_OWNER_PID *t, QHash<std::uint32_t, qint64> *owners, int proto) {
                 for (DWORD i = 0; i < t->dwNumEntries; ++i) {
                     const auto &row = t->table[i];
-                    owners->insert(ownerKey(proto, ::ntohs(static_cast<u_short>(row.dwLocalPort))),
+                    owners->insert(ownerKey(proto, ntohs(static_cast<u_short>(row.dwLocalPort))),
                             static_cast<qint64>(row.dwOwningPid));
                 }
             });
@@ -193,7 +195,7 @@ void ProcessLookup::refreshIfStale()
             [](const MIB_UDP6TABLE_OWNER_PID *t, QHash<std::uint32_t, qint64> *owners, int proto) {
                 for (DWORD i = 0; i < t->dwNumEntries; ++i) {
                     const auto &row = t->table[i];
-                    owners->insert(ownerKey(proto, ::ntohs(static_cast<u_short>(row.dwLocalPort))),
+                    owners->insert(ownerKey(proto, ntohs(static_cast<u_short>(row.dwLocalPort))),
                             static_cast<qint64>(row.dwOwningPid));
                 }
             });
@@ -259,10 +261,10 @@ void ProcessLookup::refreshIfStale()
             std::uint16_t port = 0;
             if (si.psi.soi_kind == SOCKINFO_TCP) {
                 proto = IPPROTO_TCP;
-                port = ::ntohs(si.psi.soi_proto.pri_tcp.tcpsi_ini.insi_lport);
+                port = ntohs(si.psi.soi_proto.pri_tcp.tcpsi_ini.insi_lport);
             } else if (si.psi.soi_kind == SOCKINFO_IN) {
                 proto = IPPROTO_UDP;
-                port = ::ntohs(si.psi.soi_proto.pri_in.insi_lport);
+                port = ntohs(si.psi.soi_proto.pri_in.insi_lport);
             } else {
                 continue;
             }

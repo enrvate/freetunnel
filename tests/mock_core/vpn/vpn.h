@@ -7,6 +7,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <string>
 
 #ifdef _WIN32
 #include <winsock2.h>
@@ -38,6 +39,15 @@ enum VpnErrorCode {
     VPN_EC_EVENT_LOOP_FAILURE,
     VPN_EC_INITIAL_CONNECT_FAILED,
     VPN_EC_FATAL_CONNECTIVITY_ERROR,
+};
+
+// What the client may answer to a connect request. Mirrors the core enum; the
+// two forced values are what per-app rules use to override the mode.
+enum VpnConnectAction {
+    VPN_CA_DEFAULT,
+    VPN_CA_FORCE_BYPASS,
+    VPN_CA_FORCE_REDIRECT,
+    VPN_CA_REJECT,
 };
 
 enum VpnFilteredConnectionAction {
@@ -105,6 +115,24 @@ struct VpnVerifyCertificateEvent {
     int result = 0;
 };
 
+// Mirrors what vendor/trusttunnel/02-connect-request-handler.patch adds to the
+// real wrapper. Kept in step by hand, like the rest of this mock: a test that
+// builds against a shape the real header no longer has proves nothing.
+struct VpnConnectRequestSnapshot {
+    uint64_t id = 0;
+    int proto = 0;
+    int family = 0;
+    uint16_t src_port = 0;
+    std::string src_ip;
+    std::string app_name;
+};
+
+struct VpnConnectDecision {
+    VpnConnectAction action = VPN_CA_DEFAULT;
+    std::string app_name;
+    int uid = -1;
+};
+
 struct VpnCallbacks {
     std::function<void(SocketProtectEvent *)> protect_handler;
     std::function<void(VpnVerifyCertificateEvent *)> verify_handler;
@@ -112,6 +140,7 @@ struct VpnCallbacks {
     std::function<void(VpnClientOutputEvent *)> client_output_handler;
     std::function<void(VpnTunnelConnectionStatsEvent *)> tunnel_stats_handler;
     std::function<void(VpnConnectionInfoEvent *)> connection_info_handler;
+    std::function<void(const VpnConnectRequestSnapshot &, VpnConnectDecision *)> connect_request_handler;
 };
 
 struct Logger {

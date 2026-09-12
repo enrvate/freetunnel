@@ -5,6 +5,23 @@ built from the section below it, so this file is the description of the release 
 write it before tagging. For the full commit history of a release, follow the
 compare link at the bottom of its release notes.
 
+## 1.1.9
+
+### Fixed
+
+- macOS: FreeTunnel no longer dies with a crash if you close it while it is
+  getting ready to connect. That is the moment macOS asks whether the app may
+  read the password saved for this config, and quitting while the system's
+  prompt was on screen ended the app abruptly instead of letting it close.
+
+### Changed
+
+- The privileged helper now shuts down in an orderly way when something asks it
+  to stop — logging out, or shutting the machine down with the VPN still on. It
+  takes the tunnel down on the way out. Before it was stopped where it stood,
+  and the routes and DNS it had set up were left for whatever came next to
+  clear away.
+
 ## 1.1.8
 
 ### Fixed

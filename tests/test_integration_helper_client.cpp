@@ -7,6 +7,7 @@
 #include <QTcpSocket>
 
 #include <QJsonArray>
+#include <QScopeGuard>
 #include <QSignalSpy>
 #include <QStringList>
 #include <QTcpServer>
@@ -16,6 +17,7 @@
 
 #include "helper_ipc_mock_server.h"
 #include "vpn/vpn_helper_client.h"
+#include "vpn/vpn_helper_launch.h"
 #include "vpn/vpn_helper_protocol.h"
 
 namespace {
@@ -40,7 +42,77 @@ private slots:
     void realClientRefusesPeerThatSkipsTheChallenge();
     void realClientRefusesAChallengeCarryingNoNonce();
     void securitySettingsAreSentAsValuesNotJustCommandNames();
+    void theElevatedArgvComesFromItsArgumentsAndNotTheEnvironment();
 };
+
+// linuxHelperCommand() builds the argv pkexec is asked to run AS ROOT, and until
+// now it was file-local in vpn_helper_client.cpp with no test anywhere — the one
+// function in this codebase whose output is executed with full privilege, and the
+// only one nothing checked.
+//
+// docs/security-threats.md describes the bug this shape exists to prevent, and it
+// is worth restating because it was real: naming the AppImage from $APPIMAGE and
+// validating it against $APPDIR is not validation, since an attacker who can set
+// the GUI's environment sets both sides — and $APPDIR only had to be a path
+// prefix, so APPDIR=/usr passed for an ordinary /usr/bin/FreeTunnel install and
+// $APPIMAGE was then run as root. The answer is that the path arrives as an
+// argument, from the kernel via runningAppImagePath(), and this function reads no
+// environment at all.
+void TestIntegrationHelperClient::theElevatedArgvComesFromItsArgumentsAndNotTheEnvironment()
+{
+#if defined(Q_OS_MACOS) || defined(Q_OS_WIN)
+    QSKIP("linuxHelperCommand() is the Linux elevation path");
+#else
+    const QString exe = QStringLiteral("/usr/bin/FreeTunnel");
+    const QString tokenPath = QStringLiteral("/run/user/1000/ft.token");
+
+    // An AppImage build re-execs the .AppImage file, because the running
+    // executable sits in a FUSE mount root cannot read.
+    const QStringList viaAppImage = freetunnel::linuxHelperCommand(
+            exe, QStringLiteral("/home/u/FreeTunnel.AppImage"), 51820, tokenPath);
+    const QStringList expectedAppImage{QStringLiteral("env"),
+                                       QStringLiteral("APPIMAGE_EXTRACT_AND_RUN=1"),
+                                       QStringLiteral("/home/u/FreeTunnel.AppImage"),
+                                       QStringLiteral("--helper"),
+                                       QStringLiteral("--port"),
+                                       QStringLiteral("51820"),
+                                       QStringLiteral("--token-file"),
+                                       tokenPath};
+    QCOMPARE(viaAppImage, expectedAppImage);
+
+    // An ordinary install re-execs itself and gains no env wrapper.
+    const QStringList viaExe = freetunnel::linuxHelperCommand(exe, QString(), 51820, tokenPath);
+    const QStringList expectedExe{QStringLiteral("/usr/bin/FreeTunnel"),
+                                  QStringLiteral("--helper"),
+                                  QStringLiteral("--port"),
+                                  QStringLiteral("51820"),
+                                  QStringLiteral("--token-file"),
+                                  tokenPath};
+    QCOMPARE(viaExe, expectedExe);
+
+    // The point of the whole arrangement: a hostile environment changes nothing.
+    // Both variables are set to paths an attacker would want root to run, and the
+    // argv must be byte-for-byte what it was above.
+    const QByteArray oldAppImage = qgetenv("APPIMAGE");
+    const QByteArray oldAppDir = qgetenv("APPDIR");
+    qputenv("APPIMAGE", "/tmp/evil.AppImage");
+    qputenv("APPDIR", "/usr");
+    const auto restore = qScopeGuard([&] {
+        if (oldAppImage.isEmpty()) qunsetenv("APPIMAGE"); else qputenv("APPIMAGE", oldAppImage);
+        if (oldAppDir.isEmpty()) qunsetenv("APPDIR"); else qputenv("APPDIR", oldAppDir);
+    });
+
+    QCOMPARE(freetunnel::linuxHelperCommand(exe, QString(), 51820, tokenPath), expectedExe);
+    QCOMPARE(freetunnel::linuxHelperCommand(exe, QStringLiteral("/home/u/FreeTunnel.AppImage"),
+                                            51820, tokenPath),
+             expectedAppImage);
+    for (const QStringList &cmd : {viaExe, expectedAppImage}) {
+        for (const QString &arg : cmd)
+            QVERIFY2(!arg.contains(QStringLiteral("evil")),
+                     "the elevated argv must never pick anything up from the environment");
+    }
+#endif
+}
 
 void TestIntegrationHelperClient::clientHandshakeAndConnectFlow()
 {

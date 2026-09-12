@@ -1,5 +1,6 @@
 // cppcheck-suppress-file missingIncludeSystem
 #include "vpn/vpn_helper_client.h"
+#include "vpn/vpn_helper_launch.h"
 
 #include <QCoreApplication>
 #include <QDir>
@@ -33,7 +34,12 @@ const QHostAddress kLoopback = QHostAddress(QStringLiteral("127.0.0.1"));
 #endif
 
 #if !defined(Q_OS_MACOS) && !defined(Q_OS_WIN)
-namespace {
+// Declared in vpn_helper_launch.h and deliberately NOT in the anonymous namespace
+// below: this builds the argv pkexec runs as root, and while it was file-local no
+// test could reach it. External linkage here rather than a move to
+// vpn_helper_launch.cpp, which would mean adding that source to nine test targets
+// that already compile this one.
+namespace freetunnel {
 
 QStringList linuxHelperCommand(const QString &exe, const QString &appImage, quint16 port,
                                const QString &tokenPath)
@@ -53,6 +59,10 @@ QStringList linuxHelperCommand(const QString &exe, const QString &appImage, quin
         << QStringLiteral("--token-file") << tokenPath;
     return cmd;
 }
+
+} // namespace freetunnel
+
+namespace {
 
 bool startLinuxElevation(QProcess *proc, const QString &elevator, const QStringList &helperCmd)
 {
@@ -422,7 +432,8 @@ bool VpnHelperClient::spawnElevatedHelper(quint16 port, const QString &tokenPath
 #else
     m_proc = new QProcess(this);
     const QStringList helperCmd =
-            linuxHelperCommand(exe, freetunnel::runningAppImagePath(), port, tokenPath);
+            freetunnel::linuxHelperCommand(exe, freetunnel::runningAppImagePath(), port,
+                                           tokenPath);
 
     if (startLinuxElevation(m_proc, QStringLiteral("pkexec"), helperCmd))
         return true;

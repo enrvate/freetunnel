@@ -158,6 +158,11 @@ public:
     // .desktop entry, a .lnk shortcut, an .app bundle. Resolved to the program
     // it stands for, because that is the only name a rule can match.
     Q_INVOKABLE bool addApplicationFromPath(const QString &pathOrUrl);
+    // Everything the system lists as installed, as {name, path} rows for the
+    // picker. Scanned on first use and kept for the session: the answer only
+    // changes when something is installed or removed, and on Windows the scan
+    // has to resolve every Start Menu shortcut through the shell.
+    Q_INVOKABLE QVariantList installedApplications();
     Q_INVOKABLE void removeAppRule(int index);
     Q_INVOKABLE void clearAppRules();
     Q_INVOKABLE void restoreDefaultExcludedRoutes();

@@ -23,6 +23,8 @@ private slots:
     void aMacBundleResolvesToTheProgramInside();
     void thingsThatAreNotProgramsResolveToNothing();
     void acceptsAFileUrlAsWellAsAPath();
+    void aSandboxedAppResolvesToItsOwnNameNotTheLauncher();
+    void aSandboxedAppResolvesToItsOwnNameNotTheLauncher_data();
 };
 
 void TestAppShortcut::readsTheProgramOutOfADesktopEntry_data()
@@ -167,6 +169,57 @@ void TestAppShortcut::acceptsAFileUrlAsWellAsAPath()
 
     QCOMPARE(freetunnel::resolveApplicationTarget(QUrl::fromLocalFile(program).toString()),
              QDir::toNativeSeparators(program));
+}
+
+void TestAppShortcut::aSandboxedAppResolvesToItsOwnNameNotTheLauncher_data()
+{
+    QTest::addColumn<QString>("contents");
+    QTest::addColumn<QString>("expected");
+
+    // The real AnyDesk entry, which is what exposed this: following it naively
+    // gives /usr/bin/flatpak, and a bypass rule for the launcher would take
+    // every Flatpak program out of the tunnel instead of this one. The process
+    // the system reports is /app/extra/anydesk, so the bare name matches it.
+    QTest::newRow("flatpak with --command")
+            << QStringLiteral("[Desktop Entry]\nType=Application\n"
+                              "Exec=/usr/bin/flatpak run --branch=stable --arch=x86_64 "
+                              "--command=anydesk --file-forwarding com.anydesk.Anydesk @@u %u @@\n")
+            << QStringLiteral("anydesk");
+    // Without --command the application id is the only handle there is.
+    QTest::newRow("flatpak without --command")
+            << QStringLiteral("[Desktop Entry]\nExec=/usr/bin/flatpak run com.spotify.Client\n")
+            << QStringLiteral("client");
+    QTest::newRow("snap run")
+            << QStringLiteral("[Desktop Entry]\nExec=snap run chromium %U\n")
+            << QStringLiteral("chromium");
+    // /snap/bin/x is a wrapper script; the program lives under /snap/x/current.
+    QTest::newRow("snap wrapper path")
+            << QStringLiteral("[Desktop Entry]\nExec=/snap/bin/telegram-desktop %u\n")
+            << QStringLiteral("telegram-desktop");
+    // An ordinary program must NOT be turned into a bare name: naming one copy
+    // of it precisely is the whole point of a path rule.
+    QTest::newRow("not sandboxed")
+            << QStringLiteral("[Desktop Entry]\nExec=/usr/bin/firefox %u\n") << QString();
+}
+
+void TestAppShortcut::aSandboxedAppResolvesToItsOwnNameNotTheLauncher()
+{
+    QFETCH(QString, contents);
+    QFETCH(QString, expected);
+    QCOMPARE(freetunnel::sandboxedProgramFromDesktopEntry(contents), expected);
+
+    // And the whole-file path agrees, so a dropped icon and the installed-apps
+    // list cannot disagree about the same entry.
+    if (!expected.isEmpty()) {
+        QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        const QString entry = dir.filePath(QStringLiteral("sandboxed.desktop"));
+        QFile f(entry);
+        QVERIFY(f.open(QIODevice::WriteOnly | QIODevice::Text));
+        f.write(contents.toUtf8());
+        f.close();
+        QCOMPARE(freetunnel::resolveApplicationTarget(entry), expected);
+    }
 }
 
 QTEST_MAIN(TestAppShortcut)

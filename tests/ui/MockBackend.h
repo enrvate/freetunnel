@@ -174,6 +174,16 @@ public:
     Q_INVOKABLE void clearExcludedRoutes() {}
     Q_INVOKABLE bool addAppRule(const QString &) { return false; }
     Q_INVOKABLE bool addApplicationFromPath(const QString &) { return false; }
+    // Two rows so the picker renders with content, one of them a long path,
+    // which is what the left elide in the delegate is for.
+    Q_INVOKABLE QVariantList installedApplications() {
+        QVariantList out;
+        QVariantMap a; a["name"] = QStringLiteral("Firefox"); a["path"] = QStringLiteral("/usr/bin/firefox");
+        QVariantMap b; b["name"] = QStringLiteral("Some App");
+        b["path"] = QStringLiteral("/usr/lib/some/very/long/path/to/a/program");
+        out << a << b;
+        return out;
+    }
     Q_INVOKABLE void removeAppRule(int) {}
     Q_INVOKABLE void clearAppRules() {}
     Q_INVOKABLE void restoreDefaultExcludedRoutes() {}

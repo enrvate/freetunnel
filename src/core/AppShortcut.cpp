@@ -163,6 +163,53 @@ QString executableInsideBundle(const QString &bundlePath)
 
 } // namespace
 
+QString sandboxedProgramFromDesktopEntry(const QString &contents)
+{
+    const QStringList tokens = splitExec(valueForKey(contents, QStringLiteral("Exec")));
+    if (tokens.isEmpty())
+        return {};
+    const QString runner = QFileInfo(tokens.first()).fileName();
+
+    if (runner == QLatin1String("flatpak")) {
+        // The entry usually says outright which program inside the sandbox it
+        // starts: "flatpak run --command=anydesk … com.anydesk.Anydesk".
+        for (const QString &t : tokens) {
+            if (t.startsWith(QLatin1String("--command=")))
+                return t.mid(10);
+        }
+        // Otherwise the application id is the only handle, and its last segment
+        // is the convention for the program's own name.
+        for (const QString &t : tokens) {
+            if (t.startsWith(QLatin1Char('-')) || !t.contains(QLatin1Char('.'))
+                    || t.contains(QLatin1Char('/')))
+                continue;
+            const QString last = t.section(QLatin1Char('.'), -1);
+            if (!last.isEmpty())
+                return last.toLower();
+        }
+        return {};
+    }
+
+    if (runner == QLatin1String("snap")) {
+        // "snap run foo"
+        for (int i = 1; i < tokens.size(); ++i) {
+            if (tokens[i] == QLatin1String("run"))
+                continue;
+            if (tokens[i].startsWith(QLatin1Char('-')))
+                continue;
+            return tokens[i].section(QLatin1Char('.'), -1);
+        }
+        return {};
+    }
+
+    // /snap/bin/foo is a wrapper script, not the program: the process that ends
+    // up in the socket table is the one inside /snap/foo/current/.
+    if (tokens.first().startsWith(QLatin1String("/snap/bin/")))
+        return runner;
+
+    return {};
+}
+
 QString executableFromDesktopEntry(const QString &contents)
 {
     // TryExec is the launcher's own "is this installed" probe and names the
@@ -206,8 +253,13 @@ QString resolveApplicationTarget(const QString &pathOrUrl)
         QFile f(path);
         if (!f.open(QIODevice::ReadOnly | QIODevice::Text))
             return {};
-        return absoluteExecutable(
-                executableFromDesktopEntry(QString::fromUtf8(f.readAll())));
+        const QString contents = QString::fromUtf8(f.readAll());
+        // Checked first: for a sandboxed program the launcher path is a real
+        // file and would resolve perfectly well — to the wrong thing.
+        const QString sandboxed = sandboxedProgramFromDesktopEntry(contents);
+        if (!sandboxed.isEmpty())
+            return sandboxed;
+        return absoluteExecutable(executableFromDesktopEntry(contents));
     }
 
     if (suffix == QLatin1String("app") && info.isDir())

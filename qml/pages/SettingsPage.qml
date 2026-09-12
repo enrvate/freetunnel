@@ -1,7 +1,6 @@
 import QtQuick
 import QtQuick.Layouts
 import QtQuick.Effects
-import Qt.labs.platform as Platform
 import "../components"
 import ".."
 
@@ -142,7 +141,7 @@ Item {
                        text: qsTr("Choose…"); font.pixelSize: 12
                        color: pickMa.containsMouse ? theme.text : theme.accent; font.underline: pickMa.containsMouse
                     MouseArea { id: pickMa; anchors.fill: parent; anchors.margins: -4; hoverEnabled: true
-                        cursorShape: Qt.PointingHandCursor; onClicked: appDlg.open() } }
+                        cursorShape: Qt.PointingHandCursor; onClicked: shell.overlay = "apps" } }
                 Text { Layout.maximumWidth: 80; elide: Text.ElideRight
                     visible: backend.appRules.length > 0
                     text: qsTr("Clear all"); font.pixelSize: 12
@@ -345,17 +344,4 @@ Item {
         }
     }
 
-    Platform.FileDialog {
-        id: appDlg
-        title: qsTr("Choose an application")
-        // Windows is the platform where people do not know their program's path,
-        // and the only one where the extension narrows anything down.
-        // Shortcuts are offered alongside programs on purpose: the Start menu and
-        // the desktop are full of them, and they are what a person can actually
-        // find. The backend resolves whichever one is chosen.
-        nameFilters: Qt.platform.os === "windows"
-                     ? [qsTr("Programs and shortcuts (*.exe *.lnk)"), qsTr("All files (*)")]
-                     : [qsTr("Applications (*.desktop *.app)"), qsTr("All files (*)")]
-        onAccepted: backend.addApplicationFromPath(appDlg.file.toString())
-    }
 }

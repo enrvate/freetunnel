@@ -9,6 +9,45 @@
     </message>
 </context>
 <context>
+    <name>AppPickerOverlay</name>
+    <message>
+        <source>Add an application</source>
+        <translation>Добавить приложение</translation>
+    </message>
+    <message>
+        <source>Search</source>
+        <translation>Поиск</translation>
+    </message>
+    <message>
+        <source>No installed applications were found. Choose a file instead.</source>
+        <translation>Установленные приложения не найдены. Выберите файл.</translation>
+    </message>
+    <message>
+        <source>Nothing matches that.</source>
+        <translation>Ничего не найдено.</translation>
+    </message>
+    <message>
+        <source>Choose a file instead…</source>
+        <translation>Выбрать файл…</translation>
+    </message>
+    <message>
+        <source>Choose an application</source>
+        <translation type="unfinished">Выберите приложение</translation>
+    </message>
+    <message>
+        <source>Programs and shortcuts (*.exe *.lnk)</source>
+        <translation type="unfinished">Программы и ярлыки (*.exe *.lnk)</translation>
+    </message>
+    <message>
+        <source>All files (*)</source>
+        <translation type="unfinished">Все файлы (*)</translation>
+    </message>
+    <message>
+        <source>Applications (*.desktop *.app)</source>
+        <translation type="unfinished">Приложения (*.desktop *.app)</translation>
+    </message>
+</context>
+<context>
     <name>Backend</name>
     <message>
         <source>FreeTunnel %1 started</source>
@@ -697,28 +736,12 @@
         <translation>Очистить список приложений?</translation>
     </message>
     <message>
-        <source>Choose an application</source>
-        <translation>Выберите приложение</translation>
-    </message>
-    <message>
-        <source>All files (*)</source>
-        <translation>Все файлы (*)</translation>
-    </message>
-    <message>
         <source>Drop to add this application</source>
         <translation>Отпустите, чтобы добавить это приложение</translation>
     </message>
     <message>
         <source>Drop an application here, or type its name and press Enter</source>
         <translation>Перетащите приложение сюда или введите имя и нажмите Enter</translation>
-    </message>
-    <message>
-        <source>Programs and shortcuts (*.exe *.lnk)</source>
-        <translation>Программы и ярлыки (*.exe *.lnk)</translation>
-    </message>
-    <message>
-        <source>Applications (*.desktop *.app)</source>
-        <translation>Приложения (*.desktop *.app)</translation>
     </message>
 </context>
 <context>

@@ -135,6 +135,7 @@ set(APP_STARTUP_TEST_SOURCES
     ../src/app/BackendSplit.cpp
     ../src/core/AppRules.cpp
     ../src/core/AppShortcut.cpp
+    ../src/core/InstalledApps.cpp
     ../src/app/LogModel.cpp
     ../include/app/LogModel.h
     ../src/core/AppSettings.cpp
@@ -198,6 +199,7 @@ set(BACKEND_IMPORT_TEST_SOURCES
     ../src/app/BackendSplit.cpp
     ../src/core/AppRules.cpp
     ../src/core/AppShortcut.cpp
+    ../src/core/InstalledApps.cpp
     ../src/app/LogModel.cpp
     ../include/app/LogModel.h
     ../src/core/AppSettings.cpp
@@ -271,6 +273,19 @@ add_executable(test_appshortcut
     test_appshortcut.cpp
     ../src/core/AppShortcut.cpp
 )
+
+add_executable(test_installedapps
+    test_installedapps.cpp
+    ../src/core/InstalledApps.cpp
+    ../src/core/AppShortcut.cpp
+    ../src/core/AppRules.cpp
+)
+target_include_directories(test_installedapps PRIVATE ../include ../include/core)
+target_link_libraries(test_installedapps PRIVATE Qt6::Core Qt6::Test)
+if (WIN32)
+    target_link_libraries(test_installedapps PRIVATE ole32 uuid shell32)
+endif ()
+add_test(NAME installedapps COMMAND test_installedapps -o ${CMAKE_CURRENT_BINARY_DIR}/report-installedapps.txt,txt)
 target_include_directories(test_appshortcut PRIVATE ../include ../include/core)
 target_link_libraries(test_appshortcut PRIVATE Qt6::Core Qt6::Test)
 if (WIN32)
@@ -282,6 +297,7 @@ add_executable(test_apprules
     test_apprules.cpp
     ../src/core/AppRules.cpp
     ../src/core/AppShortcut.cpp
+    ../src/core/InstalledApps.cpp
 )
 target_include_directories(test_apprules PRIVATE ../include ../include/core)
 target_link_libraries(test_apprules PRIVATE Qt6::Core Qt6::Test)
@@ -292,6 +308,7 @@ add_executable(test_processlookup
     ../src/core/ProcessLookup.cpp
     ../src/core/AppRules.cpp
     ../src/core/AppShortcut.cpp
+    ../src/core/InstalledApps.cpp
 )
 target_include_directories(test_processlookup PRIVATE ../include ../include/core)
 target_link_libraries(test_processlookup PRIVATE Qt6::Core Qt6::Network Qt6::Test)
@@ -533,6 +550,7 @@ set(BACKEND_TEST_SOURCES
     ../src/app/BackendSplit.cpp
     ../src/core/AppRules.cpp
     ../src/core/AppShortcut.cpp
+    ../src/core/InstalledApps.cpp
     ../src/app/LogModel.cpp
     ../include/app/LogModel.h
     ../src/core/AppSettings.cpp
@@ -615,6 +633,7 @@ add_executable(test_qt_trusttunnel_client
     ../src/vpn/qt_trusttunnel_client.cpp
     ../src/core/AppRules.cpp
     ../src/core/AppShortcut.cpp
+    ../src/core/InstalledApps.cpp
     ../src/core/ProcessLookup.cpp
     ../src/vpn/qt_trusttunnel_corelog.cpp
     ../src/vpn/qt_trusttunnel_fdwatch.cpp
@@ -731,6 +750,7 @@ add_executable(freetunnel_test_helper
     ../src/vpn/qt_trusttunnel_client.cpp
     ../src/core/AppRules.cpp
     ../src/core/AppShortcut.cpp
+    ../src/core/InstalledApps.cpp
     ../src/core/ProcessLookup.cpp
     ../src/vpn/qt_trusttunnel_corelog.cpp
     ../src/vpn/qt_trusttunnel_fdwatch.cpp

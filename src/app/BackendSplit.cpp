@@ -3,6 +3,7 @@
 
 #include "core/AppRules.h"
 #include "core/AppShortcut.h"
+#include "core/InstalledApps.h"
 
 #include <QHostAddress>
 #include <QRegularExpression>
@@ -120,6 +121,21 @@ bool Backend::addAppRule(const QString &rule) {
     m_settings.app_rules << norm;
     persistSettings(); applySplitRules(); reapplyIfConnected(); emit splitChanged();
     return true;
+}
+
+QVariantList Backend::installedApplications() {
+    static QVariantList cached;
+    static bool scanned = false;
+    if (!scanned) {
+        scanned = true;
+        for (const freetunnel::InstalledApp &app : freetunnel::installedApplications()) {
+            QVariantMap row;
+            row[QStringLiteral("name")] = app.name;
+            row[QStringLiteral("path")] = app.executablePath;
+            cached.append(row);
+        }
+    }
+    return cached;
 }
 
 bool Backend::addApplicationFromPath(const QString &pathOrUrl) {

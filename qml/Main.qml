@@ -168,7 +168,7 @@ Window {
     }
 
     property int currentPage: 0
-    property string overlay: "" // "", "create"
+    property string overlay: "" // "", "create", "apps"
     property int editIndex: -1  // config being edited in the create overlay (-1 = new)
     // True while a window-level popup already owns Escape (the select dropdown or
     // the confirm dialog). Sub-screens must disable their own Escape shortcut
@@ -187,8 +187,11 @@ Window {
     // breaks the required-property contract and leaves the page blank.
     function pageProps() { return { shell: win, backend: backend, theme: win.theme } }
     onCurrentPageChanged: pageLoader.setSource(pagePaths[currentPage], pageProps())
-    onOverlayChanged: overlayLoader.setSource(overlay === "create" ? "CreateConfigOverlay.qml" : "",
-                                              overlay === "create" ? pageProps() : {})
+    onOverlayChanged: {
+        var src = overlay === "create" ? "CreateConfigOverlay.qml"
+                : overlay === "apps" ? "AppPickerOverlay.qml" : ""
+        overlayLoader.setSource(src, src === "" ? {} : pageProps())
+    }
 
     // Map a Qt key code to a portable QKeySequence name (used by HotkeyField).
     function keyName(key, text) {

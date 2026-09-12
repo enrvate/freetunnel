@@ -14,9 +14,17 @@ namespace freetunnel {
 // followed to the thing that will actually show up in the system's socket table
 // — which is the only name a rule can ever match.
 //
-// Returns an absolute path to an existing file, or an empty string when the
-// argument is not a program and does not lead to one. Accepts a plain path or a
-// file: URL.
+// Returns the name a rule should use: an absolute path to an existing file,
+// or — for a program that runs inside a sandbox — a bare program name. Empty
+// when the argument is not a program and does not lead to one. Accepts a plain
+// path or a file: URL.
+//
+// The sandbox case is not a nicety. A Flatpak entry launches
+// "/usr/bin/flatpak run … com.anydesk.Anydesk", so following it naively yields
+// /usr/bin/flatpak — and a bypass rule for that would take EVERY Flatpak
+// program out of the tunnel, not the one that was asked for. The process the
+// system actually reports is /app/extra/anydesk, inside the sandbox, so a bare
+// name is what matches it.
 QString resolveApplicationTarget(const QString &pathOrUrl);
 
 // The Exec/TryExec program named by the contents of a .desktop entry, without
@@ -24,5 +32,10 @@ QString resolveApplicationTarget(const QString &pathOrUrl);
 // can be tested on every platform, not only where .desktop files are native.
 // Returns an empty string when the entry names nothing usable.
 QString executableFromDesktopEntry(const QString &contents);
+
+// The program a .desktop entry launches through a sandbox runner, as a bare
+// name, or empty when the entry is not one of those. Exposed for testing, and
+// because the list of installed applications needs the same answer.
+QString sandboxedProgramFromDesktopEntry(const QString &contents);
 
 } // namespace freetunnel

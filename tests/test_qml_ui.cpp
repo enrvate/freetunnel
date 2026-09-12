@@ -6,6 +6,7 @@
 #include <QQmlComponent>
 #include <QQmlEngine>
 #include <QQmlContext>
+#include <QQmlExpression>
 #include <QQuickItem>
 #include <QQuickWindow>
 
@@ -30,6 +31,7 @@ private slots:
     void everyComponentLoadsOnItsOwn_data();
     void confirmDialogShowsTheThirdButtonOnlyWhenItHasOne();
     void confirmDialogAnswersReturnAndEscape();
+    void aSecondConfirmQueuesInsteadOfReplacingTheLiveOne();
 
 private:
     QObject *loadPage(const char *qmlPath);
@@ -244,6 +246,97 @@ void TestQmlUi::confirmDialogShowsTheThirdButtonOnlyWhenItHasOne()
 
     QMetaObject::invokeMethod(root, "close");
     QVERIFY(!root->property("visible").toBool());
+}
+
+// Main.qml carries a comment describing a bug that already happened: a second
+// confirm request used to overwrite the live dialog in place, so the user
+// answered a question they never read, with the buttons of the previous one, and
+// the callback that ran belonged to the new one. Deep links arrive
+// asynchronously and can legitimately land back to back, so the fix was to queue.
+//
+// Nothing tested the queue. Both halves could be deleted — the queueing itself
+// and the Qt.callLater that defers the next dialog — with the suite still green.
+// Checked first that a QML edit reaches this binary at all, by breaking Main.qml
+// on purpose and watching qml_ui fail: a mutation that never got into the
+// resource would have "survived" for the wrong reason entirely.
+void TestQmlUi::aSecondConfirmQueuesInsteadOfReplacingTheLiveOne()
+{
+    QQmlComponent component(&m_engine, QUrl(QStringLiteral("qrc:/Main.qml")));
+    QVERIFY2(component.isReady(), component.errorString().toUtf8().constData());
+    QScopedPointer<QObject> root(component.create());
+    QVERIFY2(!root.isNull(), component.errorString().toUtf8().constData());
+
+    // The dialog is an unnamed child of the window; find it by the property set it
+    // exposes rather than by an id C++ cannot see.
+    QObject *dialog = nullptr;
+    const QList<QObject *> children = root->findChildren<QObject *>();
+    for (QObject *child : children) {
+        if (child->property("confirmText").isValid() && child->property("armed").isValid()) {
+            dialog = child;
+            break;
+        }
+    }
+    QVERIFY2(dialog, "could not find the confirm dialog inside Main.qml");
+
+    auto showConfirm = [&](const QString &message) {
+        return QMetaObject::invokeMethod(root.data(), "showConfirm",
+                                         Q_ARG(QVariant, QVariant(message)),
+                                         Q_ARG(QVariant, QVariant(QStringLiteral("Yes"))),
+                                         Q_ARG(QVariant, QVariant()));
+    };
+
+    QVERIFY(showConfirm(QStringLiteral("first question")));
+    QVERIFY(dialog->property("visible").toBool());
+    QCOMPARE(dialog->property("text").toString(), QStringLiteral("first question"));
+
+    // The second request must wait its turn, and the dialog on screen must still
+    // be asking the first question — that is the whole point.
+    QVERIFY(showConfirm(QStringLiteral("second question")));
+    QCOMPARE(root->property("confirmQueue").toList().size(), 1);
+    QVERIFY2(dialog->property("text").toString() == QStringLiteral("first question"),
+             "the second request replaced the question already on screen");
+
+    // Answering the first hands over to the second, deferred so the current answer
+    // runs before confirmCb is reassigned.
+    QVERIFY(QMetaObject::invokeMethod(dialog, "close"));
+    QTRY_COMPARE(dialog->property("text").toString(), QStringLiteral("second question"));
+    QVERIFY(dialog->property("visible").toBool());
+    QCOMPARE(root->property("confirmQueue").toList().size(), 0);
+
+    // And nothing queues behind the last one.
+    QVERIFY(QMetaObject::invokeMethod(dialog, "close"));
+    QTRY_VERIFY(!dialog->property("visible").toBool());
+
+    // The other half of the fix is that showNextConfirm is DEFERRED. The dialog
+    // clears `visible` before it emits confirmed(), so handing over inline would
+    // reassign win.confirmCb before the answer to the question on screen had run —
+    // the user confirms one thing and a different callback fires. Queueing alone
+    // does not prevent that, and the check above cannot see it, because close()
+    // never emits confirmed() at all.
+    //
+    // Driven exactly as the confirm button does it: visible = false, then
+    // confirmed(). The callbacks record into the mock backend because a QML
+    // closure has nowhere else to write that C++ can read back.
+    m_backend.setProperty("confirmLog", QString());
+    QQmlExpression setup(qmlContext(root.data()), root.data(),
+                         QStringLiteral(
+                                 "showConfirm('first', 'Yes', function() { "
+                                 "    backend.confirmLog = backend.confirmLog + 'A' });"
+                                 "showConfirm('second', 'Yes', function() { "
+                                 "    backend.confirmLog = backend.confirmLog + 'B' });"));
+    setup.evaluate();
+    QVERIFY2(!setup.hasError(), qPrintable(setup.error().toString()));
+    QCOMPARE(dialog->property("text").toString(), QStringLiteral("first"));
+
+    dialog->setProperty("visible", false);
+    QVERIFY(QMetaObject::invokeMethod(dialog, "confirmed"));
+    QCOMPARE(m_backend.property("confirmLog").toString(), QStringLiteral("A"));
+
+    // Only now does the second question appear, with its own callback intact.
+    QTRY_COMPARE(dialog->property("text").toString(), QStringLiteral("second"));
+    dialog->setProperty("visible", false);
+    QVERIFY(QMetaObject::invokeMethod(dialog, "confirmed"));
+    QCOMPARE(m_backend.property("confirmLog").toString(), QStringLiteral("AB"));
 }
 
 int main(int argc, char *argv[])

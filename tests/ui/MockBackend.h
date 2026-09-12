@@ -13,6 +13,12 @@
 // Lightweight Backend stand-in for headless QML/UI tests (no VPN core).
 class MockBackend : public QObject {
     Q_OBJECT
+    // Test-only scratch pad. QML closures cannot write into a C++ test directly,
+    // and QML objects reject properties they did not declare, so a confirm
+    // callback needs somewhere real to record that it ran. Used by
+    // aSecondConfirmQueuesInsteadOfReplacingTheLiveOne to tell WHICH callback
+    // fired, which is the whole question when two dialogs are queued.
+    Q_PROPERTY(QString confirmLog MEMBER m_confirmLog)
     Q_PROPERTY(bool connected READ connected WRITE setConnected NOTIFY stateChanged)
     Q_PROPERTY(bool connecting READ connecting WRITE setConnecting NOTIFY stateChanged)
     Q_PROPERTY(bool disconnecting READ disconnecting WRITE setDisconnecting NOTIFY stateChanged)
@@ -208,6 +214,7 @@ private:
     bool m_connected = false;
     bool m_connecting = false;
     bool m_disconnecting = false;
+    QString m_confirmLog;
     QString m_sessionTime = QStringLiteral("0:00:01");
     QString m_downSpeed = QStringLiteral("1.2");
     QString m_upSpeed = QStringLiteral("0.4");

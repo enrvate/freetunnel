@@ -263,6 +263,26 @@ target_include_directories(test_appimagepath PRIVATE ../include ../include/core 
 target_link_libraries(test_appimagepath PRIVATE Qt6::Core Qt6::Test)
 add_test(NAME appimagepath COMMAND test_appimagepath -o ${CMAKE_CURRENT_BINARY_DIR}/report-appimagepath.txt,txt)
 
+add_executable(test_apprules
+    test_apprules.cpp
+    ../src/core/AppRules.cpp
+)
+target_include_directories(test_apprules PRIVATE ../include ../include/core)
+target_link_libraries(test_apprules PRIVATE Qt6::Core Qt6::Test)
+add_test(NAME apprules COMMAND test_apprules -o ${CMAKE_CURRENT_BINARY_DIR}/report-apprules.txt,txt)
+
+add_executable(test_processlookup
+    test_processlookup.cpp
+    ../src/core/ProcessLookup.cpp
+    ../src/core/AppRules.cpp
+)
+target_include_directories(test_processlookup PRIVATE ../include ../include/core)
+target_link_libraries(test_processlookup PRIVATE Qt6::Core Qt6::Network Qt6::Test)
+if (WIN32)
+    target_link_libraries(test_processlookup PRIVATE iphlpapi ws2_32)
+endif ()
+add_test(NAME processlookup COMMAND test_processlookup -o ${CMAKE_CURRENT_BINARY_DIR}/report-processlookup.txt,txt)
+
 add_executable(test_bypassrules
     test_bypassrules.cpp
     ../src/core/BypassRules.cpp

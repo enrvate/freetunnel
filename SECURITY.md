@@ -58,6 +58,10 @@ The in-app updater requires:
    verified by the in-app updater
 3. Secure Hash Algorithm 256-bit (SHA-256) match of the downloaded installer
    against the published checksum list (`SHA256SUMS.txt`)
+4. A `#version=` line inside the signed bytes naming the release the manifest
+   belongs to — without it an authentic manifest from an **older** release could
+   be replayed to pin a user short of the newest build
+   (see [docs/security-threats.md](docs/security-threats.md))
 
 The release job signs `SHA256SUMS.txt` with the `ED25519_SIGNING_KEY` GitHub
 Actions secret (OpenSSL (open-source TLS and cryptography toolkit) Ed25519

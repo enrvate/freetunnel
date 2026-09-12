@@ -17,7 +17,7 @@ built on the [TrustTunnel](https://github.com/TrustTunnel/TrustTunnelClient) cor
 
 FreeTunnel wraps TrustTunnel in a lightweight GUI: connect with one click, manage
 configs, split tunneling, kill switch, system tray, and global hotkeys. Passwords
-stay in the OS credential store (Keychain / Credential Manager / libsecret.
+stay in the OS credential store (Keychain / Credential Manager / libsecret).
 
 Updates are verified with SHA-256 manifests and Ed25519 signatures before install.
 

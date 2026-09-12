@@ -8,7 +8,7 @@ testing, translations, and CI.
 - **TrustTunnelClient** upstream checkout ([TrustTunnel/TrustTunnelClient](https://github.com/TrustTunnel/TrustTunnelClient))
 - CMake 3.16+, C++20 compiler (clang recommended for Linux)
 - Qt 6.8+ (Gui, Qml, Quick, Network, Svg)
-- Python 3 + Conan 2.12 (for upstream native deps)
+- Python 3 + Conan 2.31.1 (for upstream native deps — same pin as CI)
 - Ninja (recommended)
 
 FreeTunnel is **not standalone**: it must be built as a subdirectory of the
@@ -16,15 +16,25 @@ upstream CMake tree so the `vpnlibs_trusttunnel` target exists.
 
 ## Local build
 
+Steps 1 and 2 are already automated — `scripts/setup-upstream-tree.sh` clones
+upstream at the pinned ref, copies this client in as `FreeTunnel/`, appends the
+`add_subdirectory()` hook and applies the stats patch, which is exactly what CI
+does. Use it to reproduce a CI build. It **copies** the client rather than
+linking it, so for day-to-day work on FreeTunnel itself follow the manual steps
+below and keep editing your own checkout.
+
 ### 1. Clone upstream and inject FreeTunnel
 
 ```bash
 git clone https://github.com/TrustTunnel/TrustTunnelClient.git trusttunnel
 cd trusttunnel
-git checkout fa033c08ec332e44cc3590d62145bce8623a8014   # CI pin — bump deliberately
 
 rm -rf FreeTunnel
 git clone https://github.com/dimmmmmmmer/freetunnel.git FreeTunnel   # or symlink your fork
+
+# The pinned upstream commit lives in exactly one place. Read it, never retype it —
+# CI verifies the stats patch against this same file.
+git checkout "$(tr -d '[:space:]' < FreeTunnel/scripts/upstream_ref.txt)"
 
 # Ensure upstream CMakeLists.txt adds the subdirectory when BUILD_TRUSTTUNNEL_QT=ON
 ```
@@ -108,25 +118,38 @@ From `FreeTunnel/tests/`:
 ```bash
 cmake -S . -B build-tests -G Ninja
 cmake --build build-tests -j
-ctest --test-dir build-tests --output-on-failure
+QT_QPA_PLATFORM=offscreen bash ../scripts/run-ctest.sh build-tests
 ```
 
+CI runs exactly that wrapper, and on Linux it matters: `credentialstore` talks to
+a real Secret Service, so on a desktop without an unlocked keyring it is the one
+suite that fails for environmental reasons. `run-ctest.sh` unlocks
+gnome-keyring on Linux CI; locally, either unlock yours or skip that suite with
+`bash ../scripts/run-ctest.sh build-tests -E '^credentialstore$'` — CI still
+covers it.
+
 CI runs this on every push/PR via `.github/workflows/tests.yml` (matrix: Linux,
-macOS, Windows). Additional Linux-only jobs: **gcov/lcov coverage**
+macOS, Windows), plus a scheduled run every Monday so a quiet `main` still gets
+sampled. Additional Linux-only jobs: **gcov/lcov coverage**
 (`scripts/coverage-upstream-report.sh`, merges unit tests + upstream instrumented
 build) and **ASan+UBSan** (`-DFT_ENABLE_SANITIZERS=ON`).
 
-Test suites: deep links (incl. structured fuzz), config import, settings, TOML,
-credentials (Keychain / Cred Manager on macOS/Windows), release verify, control
-commands, helper IPC, QML UI smoke tests, integration tests (config workflow,
-Backend+mock VPN, single-instance socket, helper client), UpdateChecker E2E
-(mock HTTP).
+Test suites — 36 targets, `ctest -N` lists them: deep links (incl. structured
+fuzz) and config import, config store and paths, settings, both TOML writers,
+credentials (Keychain / Credential Manager / libsecret), release verify and
+version comparison, control commands and the single-instance socket, helper IPC
+from both ends (client, server, fuzz) and the elevated argv, split-tunnel bypass
+rules and interface binding, the Backend's own units (logs, settings, config,
+split tunnel, updates), QML UI smoke tests, and integration tests (config
+workflow, Backend + mock VPN, single instance, helper client, UpdateChecker
+end-to-end against a mock HTTP server).
 
-Security CI (`.github/workflows/security.yml`): cppcheck on `src/` and
-`include/`, **clang-tidy** (`scripts/run-clang-tidy.sh`), PR **dependency
-review**, upstream patch verification (`scripts/verify_upstream_patch.sh`
-against `scripts/upstream_ref.txt`), i18n catalog freshness, and pinned-dependency
-checks (`scripts/check-pinned-deps.sh`).
+Security CI (`.github/workflows/security.yml`), on every push/PR and weekly:
+cppcheck on `src/` and `include/`, **clang-tidy** (`scripts/run-clang-tidy.sh`),
+PR **dependency review**, upstream patch verification
+(`scripts/verify_upstream_patch.sh` against `scripts/upstream_ref.txt`), i18n
+catalog freshness, and pinned-dependency checks
+(`scripts/check-pinned-deps.sh`).
 
 See [SECURITY.md](SECURITY.md) and [docs/security-threats.md](docs/security-threats.md) for the
 threat model and known limitations.
@@ -149,7 +172,7 @@ markdown from **Settings → General → Badges** (it embeds your project UUID).
 
 ### Coverage badge (required for non-zero Codacy coverage)
 
-CI generates lcov from unit tests (~49% of instrumented `src/`/`include/` today). Codacy
+CI generates lcov from unit tests (~79% of instrumented `src/`/`include/` today). Codacy
 shows **0%** until the report is uploaded with the correct token.
 
 1. Codacy → **freetunnel** → **Settings → Coverage** → copy the **Project API token**
@@ -287,11 +310,20 @@ See [DEEP_LINK.md](DEEP_LINK.md) for the `tt://` TLV specification.
 | Workflow | Purpose |
 | --- | --- |
 | `.github/workflows/build.yml` | Release builds (HTTP/3 enabled), Linux/macOS/Windows |
-| `.github/workflows/tests.yml` | Fast unit tests (Linux + macOS + Windows); Linux coverage + ASan |
-| `.github/workflows/security.yml` | cppcheck, clang-tidy, dependency review (PRs), upstream patch verify, i18n freshness, pinned deps |
+| `.github/workflows/tests.yml` | Fast unit tests (Linux + macOS + Windows); Linux coverage + ASan. Also weekly (Mon) |
+| `.github/workflows/security.yml` | cppcheck, clang-tidy, dependency review (PRs), upstream patch verify, i18n freshness, pinned deps. Also weekly (Mon) |
 
-Upstream ref is pinned in workflow `env.UPSTREAM_REF`. Bump it with the patch
-script re-verified.
+Upstream ref is pinned in [`scripts/upstream_ref.txt`](scripts/upstream_ref.txt) —
+the workflows read that file rather than carrying a SHA of their own. Bump it
+with the patch script re-verified.
+
+## Reporting bugs
+
+Open an issue with the [bug report form](https://github.com/dimmmmmmmer/freetunnel/issues/new/choose);
+it asks for the OS, the build, and what the log says, which is most of what any
+answer depends on. Russian is fine — the forms say so. Security bugs go through
+[Security Advisories](https://github.com/dimmmmmmmer/freetunnel/security/advisories/new)
+instead, never a public issue.
 
 ## Pull requests
 

@@ -57,6 +57,12 @@ public:
     // the previous session saw is gone.
     void invalidate();
 
+    // True when the most recent scan produced no owners at all. That is a
+    // different problem from "this connection could not be attributed", and the
+    // two are indistinguishable from a log of unattributed connections — so the
+    // caller reports it once, where the user is already looking.
+    bool lastScanFoundNothing() const { return m_everBuilt && m_owners.isEmpty(); }
+
 private:
     void refreshIfStale();
 

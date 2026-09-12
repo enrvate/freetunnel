@@ -3,6 +3,8 @@
 
 #include <QDir>
 #include <QtGlobal>
+
+#include <cerrno>
 #include <QFile>
 #include <QFileInfo>
 
@@ -220,15 +222,16 @@ void ProcessLookup::refreshIfStale()
     // TTL for every process, rather than per connection.
     int count = ::proc_listpids(PROC_ALL_PIDS, 0, nullptr, 0);
     if (count <= 0) {
-        m_builtAt = now;
-        m_everBuilt = true;
+        // Not cached: m_everBuilt stays false so the next connection tries
+        // again, instead of every connection for the next TTL inheriting one
+        // failed call's emptiness.
+        qWarning("process lookup: proc_listpids sizing failed (errno %d)", errno);
         return;
     }
     QByteArray pidBuf(count, Qt::Uninitialized);
     count = ::proc_listpids(PROC_ALL_PIDS, 0, pidBuf.data(), pidBuf.size());
     if (count <= 0) {
-        m_builtAt = now;
-        m_everBuilt = true;
+        qWarning("process lookup: proc_listpids failed (errno %d)", errno);
         return;
     }
     const int nPids = count / static_cast<int>(sizeof(pid_t));
@@ -250,16 +253,22 @@ void ProcessLookup::refreshIfStale()
         for (int f = 0; f < nFds; ++f) {
             if (fds[f].proc_fdtype != PROX_FDTYPE_SOCKET)
                 continue;
-            socket_fdinfo si = {};
-            // Accepts a short write rather than demanding exactly sizeof(si).
-            // The kernel fills as much of the struct as its own ABI knows, and
-            // an SDK newer than the kernel makes an equality check reject every
-            // socket on the machine — which looks exactly like "no program owns
-            // this connection" rather than like a broken scan.
-            const int got = ::proc_pidfdinfo(pid, fds[f].proc_fd, PROC_PIDFDSOCKETINFO, &si,
-                                             sizeof(si));
-            if (got < static_cast<int>(sizeof(si.psi.soi_family) + sizeof(si.psi.soi_kind)))
+            // Deliberately over-allocated, and this is the load-bearing detail.
+            // proc_pidfdinfo does not do short writes: the kernel compares the
+            // buffer size against ITS OWN sizeof(struct socket_fdinfo) and
+            // refuses with ENOMEM if the buffer is smaller — which libproc
+            // reports as a 0 return. So a binary built against an SDK older than
+            // the running kernel has every socket on the machine refused, and
+            // the symptom is not an error anywhere: it is that no connection can
+            // be attributed to any program. Passing a larger buffer makes the
+            // kernel's check pass whatever it grows to; the fields read below
+            // are at the front, where the layout does not move.
+            alignas(socket_fdinfo) char raw[sizeof(socket_fdinfo) + 1024] = {};
+            const int got = ::proc_pidfdinfo(pid, fds[f].proc_fd, PROC_PIDFDSOCKETINFO, raw,
+                                             static_cast<int>(sizeof(raw)));
+            if (got <= 0)
                 continue;
+            const socket_fdinfo &si = *reinterpret_cast<const socket_fdinfo *>(raw);
             const int family = si.psi.soi_family;
             if (family != AF_INET && family != AF_INET6)
                 continue;
@@ -276,21 +285,21 @@ void ProcessLookup::refreshIfStale()
             }
             if (port == 0)
                 continue;
-            m_owners.insert(ownerKey(proto, port), static_cast<qint64>(pid));
+            // Does not overwrite: two processes can legitimately hold the same
+            // (protocol, port) — a listener and an accepted connection, or a
+            // socket one of them is about to close — and letting whichever pid
+            // the scan happened to reach last win makes the answer depend on
+            // process enumeration order.
+            const std::uint32_t key = ownerKey(proto, port);
+            if (!m_owners.contains(key))
+                m_owners.insert(key, static_cast<qint64>(pid));
         }
     }
 
     if (m_owners.isEmpty()) {
-        // Said once per session, not per connection: this is the difference
-        // between "that program could not be identified" and "no program on
-        // this machine can be", and only the second is a bug in here.
-        static bool warned = false;
-        if (!warned) {
-            warned = true;
-            qWarning("process lookup found no sockets at all — every connection will read as "
-                     "unknown (scanned %d pids)",
-                     nPids);
-        }
+        qWarning("process lookup found no sockets at all — every connection will read as "
+                 "unknown (scanned %d pids)",
+                 nPids);
     }
     m_builtAt = now;
     m_everBuilt = true;
@@ -374,8 +383,12 @@ void ProcessLookup::refreshIfStale()
         const QHash<std::uint64_t, qint64> byInode = socketInodeOwners();
         for (const SocketOwner &s : sockets) {
             const auto it = byInode.constFind(s.inode);
-            if (it != byInode.constEnd())
-                m_owners.insert(ownerKey(s.proto, s.port), it.value());
+            if (it == byInode.constEnd())
+                continue;
+            // First one wins, for the same reason as the macOS scan above.
+            const std::uint32_t key = ownerKey(s.proto, s.port);
+            if (!m_owners.contains(key))
+                m_owners.insert(key, it.value());
         }
     }
 

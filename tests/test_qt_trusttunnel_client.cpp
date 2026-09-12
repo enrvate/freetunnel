@@ -188,10 +188,13 @@ void TestQtTrustTunnelClient::anAppRuleTakesItsOwnConnectionOutOfTheTunnel()
 
     const ag::VpnConnectDecision decision = ctl.fireConnectRequest(id, req);
     QCOMPARE(decision.action, ag::VPN_CA_FORCE_BYPASS);
-    // The program is named back to the core even so, which is what makes it
-    // show up in the connection log a user reads to write the next rule.
-    QCOMPARE(QString::fromStdString(decision.app_name),
-             QFileInfo(QCoreApplication::applicationFilePath()).fileName());
+    // And the program's name must NOT be handed back to the core. The core
+    // forwards it to the upstream, which puts it in the CONNECT request sent to
+    // the VPN endpoint — so naming it here would tell the operator which
+    // application opened every connection. It was set once; this is what keeps
+    // it from coming back.
+    QVERIFY2(decision.app_name.empty(),
+             "the application name must not reach the VPN endpoint");
 }
 
 // The same list must mean the opposite thing in the other mode, exactly as the

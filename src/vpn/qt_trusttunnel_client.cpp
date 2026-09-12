@@ -463,9 +463,10 @@ ag::VpnCallbacks QtTrustTunnelClient::makeCallbacks(const GuardPtr &guard) {
     // the lookup needs no lock on this object; `this` is touched only at the
     // end, to log, and only under the liveness guard.
     auto lookup = std::make_shared<freetunnel::ProcessLookup>();
+    auto scanWarned = std::make_shared<bool>(false);
     auto appRules = m_appRules;
-    callbacks.connect_request_handler = [this, guard, session, appRules,
-                                         lookup](const ag::VpnConnectRequestSnapshot &req,
+    callbacks.connect_request_handler = [this, guard, session, appRules, lookup,
+                                         scanWarned](const ag::VpnConnectRequestSnapshot &req,
                                                  ag::VpnConnectDecision *decision) {
         if (decision == nullptr)
             return;
@@ -497,16 +498,34 @@ ag::VpnCallbacks QtTrustTunnelClient::makeCallbacks(const GuardPtr &guard) {
         case freetunnel::AppAction::Default:
             break;
         }
-        // Name it even when no rule matched: this is what puts the program into
-        // the core's connection log, which is how a user finds out what to
-        // write a rule for in the first place.
-        if (!app.name.isEmpty())
-            decision->app_name = app.name.toStdString();
+        // decision->app_name is deliberately NOT set. It looks like a harmless way
+        // to get the program into the core's own log, and it is not: the core
+        // passes it to the upstream, which puts it in the CONNECT request sent
+        // to the VPN endpoint (upstream open_connection -> send_connect_request
+        // -> make_http_connect_request). That would tell the operator which
+        // application opened every connection — a thing this app exists to avoid
+        // telling anyone. The line below puts it in the local log instead, which
+        // is where the user was going to look anyway.
 
         // And say so in the app's own log. Without this the feature is
         // unobservable: a rule that never matched and a rule that matched and
         // was overruled look identical from outside, and the first question
         // anyone asks — "did it even see my program?" — has no answer.
+        // Said once, and said where the user is looking. Without it, "no program
+        // owns this connection" and "no program on this machine can be
+        // identified" produce the same log — and only the second is a fault in
+        // here. The helper's own stderr goes to a root-owned temp file, which
+        // is no use to anyone reporting a problem.
+        if (lookup->lastScanFoundNothing() && !*scanWarned) {
+            *scanWarned = true;
+            std::lock_guard<std::mutex> lk(guard->mutex);
+            if (guard->alive) {
+                postConnectionInfo(session,
+                                   QStringLiteral("app rules: this system reported no sockets at "
+                                                  "all, so no connection can be matched"));
+            }
+        }
+
         const bool routed = decision->action == ag::VPN_CA_FORCE_BYPASS
                 || decision->action == ag::VPN_CA_FORCE_REDIRECT;
         // A connection nobody wrote a rule for is the overwhelming majority, and

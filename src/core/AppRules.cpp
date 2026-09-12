@@ -112,6 +112,20 @@ QStringList sanitizedAppRules(const QStringList &rules)
     return out;
 }
 
+QString appBundleOf(const QString &path)
+{
+    // Implemented on the string rather than the filesystem so it works for a
+    // process path reported by a machine we are not standing on, and so it can
+    // be tested where the tests run.
+    // Not named `unix`: that is a predefined macro on Linux and the file stops
+    // compiling in a way that reads like a parser bug.
+    const QString slashed = QDir::fromNativeSeparators(path);
+    const qsizetype marker = slashed.indexOf(QLatin1String(".app/Contents/"));
+    if (marker < 0)
+        return {};
+    return QDir::toNativeSeparators(slashed.left(marker + 4)); // keep ".app"
+}
+
 bool appMatchesRules(const AppIdentity &app, const QStringList &rules)
 {
     if (app.executablePath.isEmpty() && app.name.isEmpty())
@@ -132,6 +146,14 @@ bool appMatchesRules(const AppIdentity &app, const QStringList &rules)
         if (looksLikePath(norm)) {
             if (!path.isEmpty() && path.compare(norm, cs) == 0)
                 return true;
+            // Same application, different binary inside it. Only when BOTH are
+            // in a bundle — a bare directory prefix match would make a rule for
+            // one program cover every program beside it.
+            const QString ruleBundle = appBundleOf(norm);
+            if (!ruleBundle.isEmpty() && !path.isEmpty()
+                    && ruleBundle.compare(appBundleOf(path), cs) == 0) {
+                return true;
+            }
         } else if (!name.isEmpty() && name.compare(norm, cs) == 0) {
             return true;
         }

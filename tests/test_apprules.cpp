@@ -49,6 +49,7 @@ private slots:
     void anEmptyRuleListNeverForcesAnything();
     void caseFollowsTheFilesystem();
     void quotesAndSpacesSurviveTheRoundTrip();
+    void aRuleMeansTheApplicationNotOneBinaryInsideIt();
 };
 
 // The ordinary case: the user types "firefox" and means firefox, wherever the
@@ -190,6 +191,40 @@ void TestAppRules::quotesAndSpacesSurviveTheRoundTrip()
     QCOMPARE(freetunnel::normalizedAppRule(quoted), freetunnel::normalizedAppRule(path));
     QVERIFY(freetunnel::appMatchesRules(appAt(path), {quoted}));
     QVERIFY(freetunnel::appMatchesRules(appAt(path), {QStringLiteral("  ") + path + QStringLiteral("  ")}));
+}
+
+// Reported from a real macOS desktop: an application added to the bypass list
+// was tunnelled anyway. A browser-like program does not open its sockets from
+// the binary you picked — it does them from a helper process inside its own
+// bundle — so the rule never saw the connections that mattered. A rule has to
+// mean the application.
+void TestAppRules::aRuleMeansTheApplicationNotOneBinaryInsideIt()
+{
+    const QString picked = QStringLiteral("/Applications/ChatGPT.app/Contents/MacOS/ChatGPT");
+    const QStringList rules{picked};
+
+    QCOMPARE(freetunnel::appBundleOf(picked), QStringLiteral("/Applications/ChatGPT.app"));
+
+    // The process the socket actually belongs to.
+    const QString helper = QStringLiteral(
+            "/Applications/ChatGPT.app/Contents/Frameworks/ChatGPT Helper.app/Contents/MacOS/ChatGPT Helper");
+    QVERIFY2(freetunnel::appMatchesRules(AppIdentity{helper, QStringLiteral("ChatGPT Helper")}, rules),
+             "a helper inside the same application must be covered by the rule");
+
+    // And the binary itself, still.
+    QVERIFY(freetunnel::appMatchesRules(appAt(picked), rules));
+
+    // But NOT a different application, even one installed beside it. If this
+    // ever passes, one bypass rule quietly takes every neighbouring program out
+    // of the tunnel.
+    QVERIFY(!freetunnel::appMatchesRules(
+            appAt(QStringLiteral("/Applications/Other.app/Contents/MacOS/Other")), rules));
+    // Nor an ordinary program that merely shares a directory.
+    QVERIFY(!freetunnel::appMatchesRules(
+            appAt(QStringLiteral("/usr/bin/other")), {QStringLiteral("/usr/bin/curl")}));
+    QVERIFY(freetunnel::appBundleOf(QStringLiteral("/usr/bin/curl")).isEmpty());
+    // A directory that merely ends in .app is not a bundle path either.
+    QVERIFY(freetunnel::appBundleOf(QStringLiteral("/tmp/notabundle.app")).isEmpty());
 }
 
 QTEST_MAIN(TestAppRules)

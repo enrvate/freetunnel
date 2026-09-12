@@ -25,6 +25,8 @@ private slots:
     void acceptsAFileUrlAsWellAsAPath();
     void aSandboxedAppResolvesToItsOwnNameNotTheLauncher();
     void aSandboxedAppResolvesToItsOwnNameNotTheLauncher_data();
+    void aBundleDraggedFromFinderCarriesATrailingSlash();
+    void aBundleDeclaresItsOwnExecutableName();
 };
 
 void TestAppShortcut::readsTheProgramOutOfADesktopEntry_data()
@@ -220,6 +222,60 @@ void TestAppShortcut::aSandboxedAppResolvesToItsOwnNameNotTheLauncher()
         f.close();
         QCOMPARE(freetunnel::resolveApplicationTarget(entry), expected);
     }
+}
+
+// Reported from a real macOS desktop: dragging an application out of
+// /Applications was answered with "that is not a program". Finder hands over a
+// directory with a trailing slash, a .app IS a directory, and with the slash
+// left on QFileInfo::suffix() is empty — so the bundle was never recognised as
+// one. Every spelling a drop can arrive in has to work.
+void TestAppShortcut::aBundleDraggedFromFinderCarriesATrailingSlash()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString bundle = dir.filePath(QStringLiteral("Safari.app"));
+    QVERIFY(QDir().mkpath(bundle + QStringLiteral("/Contents/MacOS")));
+    const QString inner = bundle + QStringLiteral("/Contents/MacOS/Safari");
+    QFile bin(inner);
+    QVERIFY(bin.open(QIODevice::WriteOnly));
+    bin.close();
+    const QString expected = QDir::toNativeSeparators(inner);
+
+    QCOMPARE(freetunnel::resolveApplicationTarget(bundle), expected);
+    QCOMPARE(freetunnel::resolveApplicationTarget(bundle + QStringLiteral("/")), expected);
+    QCOMPARE(freetunnel::resolveApplicationTarget(QUrl::fromLocalFile(bundle).toString()), expected);
+    QCOMPARE(freetunnel::resolveApplicationTarget(QUrl::fromLocalFile(bundle).toString()
+                                                  + QStringLiteral("/")),
+             expected);
+}
+
+// A bundle's executable is not always named after the bundle — Visual Studio
+// Code's is Electron. Its own Info.plist is the authority, so ask that before
+// guessing from the name.
+void TestAppShortcut::aBundleDeclaresItsOwnExecutableName()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString bundle = dir.filePath(QStringLiteral("Some Editor.app"));
+    QVERIFY(QDir().mkpath(bundle + QStringLiteral("/Contents/MacOS")));
+
+    // Two programs inside, so neither the name guess nor the single-file
+    // fallback can produce the answer — only the plist can.
+    for (const QString &name : {QStringLiteral("Electron"), QStringLiteral("helper")}) {
+        QFile bin(bundle + QStringLiteral("/Contents/MacOS/") + name);
+        QVERIFY(bin.open(QIODevice::WriteOnly));
+        bin.close();
+    }
+    QFile plist(bundle + QStringLiteral("/Contents/Info.plist"));
+    QVERIFY(plist.open(QIODevice::WriteOnly | QIODevice::Text));
+    plist.write("<?xml version=\"1.0\"?>\n<plist><dict>\n"
+                "<key>CFBundleName</key><string>Some Editor</string>\n"
+                "<key>CFBundleExecutable</key><string>Electron</string>\n"
+                "</dict></plist>\n");
+    plist.close();
+
+    QCOMPARE(freetunnel::resolveApplicationTarget(bundle),
+             QDir::toNativeSeparators(bundle + QStringLiteral("/Contents/MacOS/Electron")));
 }
 
 QTEST_MAIN(TestAppShortcut)

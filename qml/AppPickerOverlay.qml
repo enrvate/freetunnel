@@ -60,15 +60,17 @@ Item {
         ColumnLayout {
             anchors.fill: parent; anchors.margins: 14; spacing: 10
 
+            // Back arrow before the title, the same as the config editor: this
+            // is a step into a list and out again, not a dialog to be dismissed.
             RowLayout {
-                Layout.fillWidth: true
-                Text { Layout.fillWidth: true; text: qsTr("Add an application")
-                       color: theme.text; font.pixelSize: 16; font.bold: true }
-                Text { text: "✕"; color: closeMa.containsMouse ? theme.text : theme.textFaint
-                       font.pixelSize: 15
-                    MouseArea { id: closeMa; anchors.fill: parent; anchors.margins: -6
+                Layout.fillWidth: true; spacing: 12
+                Text { text: "←"; color: backMa.containsMouse ? theme.text : theme.textDim
+                       font.pixelSize: 20
+                    MouseArea { id: backMa; anchors.fill: parent; anchors.margins: -6
                         hoverEnabled: true; cursorShape: Qt.PointingHandCursor
                         onClicked: pickerRoot.shell.overlay = "" } }
+                Text { Layout.fillWidth: true; text: qsTr("Add an application")
+                       color: theme.text; font.pixelSize: 15; font.weight: Font.Medium }
             }
 
             Rectangle {
@@ -82,8 +84,9 @@ Item {
                     font.pixelSize: 13; color: theme.text
                     onTextChanged: pickerRoot.applyFilter(text)
                     Keys.onEscapePressed: pickerRoot.shell.overlay = ""
-                    // Enter takes the first match, which is what typing a name
-                    // and pressing Enter is expected to do.
+                    // Enter takes the first match. This one may pass a bare name
+                    // straight through — a sandboxed program's rule IS a bare
+                    // name — because it comes from the list, not from a guess.
                     onAccepted: {
                         if (appList.model.length > 0) {
                             backend.addAppRule(appList.model[0].path)

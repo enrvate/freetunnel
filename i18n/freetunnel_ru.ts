@@ -32,19 +32,19 @@
     </message>
     <message>
         <source>Choose an application</source>
-        <translation type="unfinished">Выберите приложение</translation>
+        <translation>Выберите приложение</translation>
     </message>
     <message>
         <source>Programs and shortcuts (*.exe *.lnk)</source>
-        <translation type="unfinished">Программы и ярлыки (*.exe *.lnk)</translation>
+        <translation>Программы и ярлыки (*.exe *.lnk)</translation>
     </message>
     <message>
         <source>All files (*)</source>
-        <translation type="unfinished">Все файлы (*)</translation>
+        <translation>Все файлы (*)</translation>
     </message>
     <message>
         <source>Applications (*.desktop *.app)</source>
-        <translation type="unfinished">Приложения (*.desktop *.app)</translation>
+        <translation>Приложения (*.desktop *.app)</translation>
     </message>
 </context>
 <context>
@@ -274,8 +274,8 @@
         <translation>Введите имя программы (firefox) или полный путь к ней</translation>
     </message>
     <message>
-        <source>That is not a program. Drop an application, or a shortcut to one.</source>
-        <translation>Это не программа. Перетащите приложение или ярлык на него.</translation>
+        <source>That is not a program. Drop an application here, or pick one with Choose…</source>
+        <translation>Это не программа. Перетащите приложение сюда или выберите через «Выбрать…»</translation>
     </message>
 </context>
 <context>
@@ -723,26 +723,6 @@
         <source>Kill switch</source>
         <translation>Аварийное отключение</translation>
     </message>
-    <message>
-        <source>Applications</source>
-        <translation>Приложения</translation>
-    </message>
-    <message>
-        <source>Choose…</source>
-        <translation>Выбрать…</translation>
-    </message>
-    <message>
-        <source>Clear all applications?</source>
-        <translation>Очистить список приложений?</translation>
-    </message>
-    <message>
-        <source>Drop to add this application</source>
-        <translation>Отпустите, чтобы добавить это приложение</translation>
-    </message>
-    <message>
-        <source>Drop an application here, or type its name and press Enter</source>
-        <translation>Перетащите приложение сюда или введите имя и нажмите Enter</translation>
-    </message>
 </context>
 <context>
     <name>SplitPage</name>
@@ -809,6 +789,30 @@
     <message>
         <source>Add a rule to use &quot;Through VPN&quot; — with an empty list nothing would go through the tunnel, so the full tunnel stays on.</source>
         <translation>Добавьте правило, чтобы режим «Через VPN» заработал: с пустым списком через туннель не пойдёт ничего, поэтому остаётся полный туннель.</translation>
+    </message>
+    <message>
+        <source>Applications — via VPN</source>
+        <translation>Приложения — через VPN</translation>
+    </message>
+    <message>
+        <source>Applications — bypass VPN</source>
+        <translation>Приложения — в обход VPN</translation>
+    </message>
+    <message>
+        <source>Choose…</source>
+        <translation>Выбрать…</translation>
+    </message>
+    <message>
+        <source>Clear all applications?</source>
+        <translation>Очистить список приложений?</translation>
+    </message>
+    <message>
+        <source>Drop to add this application</source>
+        <translation>Отпустите, чтобы добавить это приложение</translation>
+    </message>
+    <message>
+        <source>Drop an application here, or paste its full path</source>
+        <translation>Перетащите приложение сюда или вставьте полный путь</translation>
     </message>
 </context>
 <context>

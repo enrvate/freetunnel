@@ -40,8 +40,18 @@ QString normalizedAppRule(const QString &rule);
 // Drop what cannot match and dedupe, keeping the first spelling of each rule.
 QStringList sanitizedAppRules(const QStringList &rules);
 
+// The .app bundle a path lives inside, or empty when it is not inside one.
+// "/Applications/ChatGPT.app/Contents/MacOS/ChatGPT" -> "/Applications/ChatGPT.app"
+QString appBundleOf(const QString &path);
+
 // Does any rule name this program? A path rule matches the whole path; a bare
 // name matches the file name of any path.
+//
+// On macOS a path rule also matches anything inside the same .app bundle. That
+// is not a convenience: a browser-like program does its networking from a
+// separate helper process that lives inside its own bundle, so the connections
+// a user wants routed never come from the executable they picked. Matching the
+// bundle is what makes a rule mean the application rather than one binary.
 bool appMatchesRules(const AppIdentity &app, const QStringList &rules);
 
 // The decision for one connection. `selectiveMode` is the existing split-tunnel

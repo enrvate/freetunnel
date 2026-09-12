@@ -451,8 +451,9 @@ ag::VpnCallbacks QtTrustTunnelClient::makeCallbacks(const GuardPtr &guard) {
     // `this`, because it can still be running while this object is destroyed.
     auto lookup = std::make_shared<freetunnel::ProcessLookup>();
     auto appRules = m_appRules;
-    callbacks.connect_request_handler = [appRules, lookup](const ag::VpnConnectRequestSnapshot &req,
-                                                           ag::VpnConnectDecision *decision) {
+    callbacks.connect_request_handler = [this, guard, session, appRules,
+                                         lookup](const ag::VpnConnectRequestSnapshot &req,
+                                                 ag::VpnConnectDecision *decision) {
         if (decision == nullptr)
             return;
         QStringList rules;
@@ -486,6 +487,22 @@ ag::VpnCallbacks QtTrustTunnelClient::makeCallbacks(const GuardPtr &guard) {
         // write a rule for in the first place.
         if (!app.name.isEmpty())
             decision->app_name = app.name.toStdString();
+
+        // And say so in the app's own log. Without this the feature is
+        // unobservable: a rule that never matched and a rule that matched and
+        // was overruled look identical from outside, and the first question
+        // anyone asks — "did it even see my program?" — has no answer.
+        const QString who = app.name.isEmpty()
+                ? QStringLiteral("unknown (port %1)").arg(req.src_port)
+                : app.name;
+        const QString what = decision->action == ag::VPN_CA_FORCE_BYPASS ? QStringLiteral("bypass")
+                : decision->action == ag::VPN_CA_FORCE_REDIRECT          ? QStringLiteral("tunnel")
+                                                                         : QStringLiteral("no rule");
+        // The lookup above may be slow; the guard is taken only now, and only
+        // to reach back into an object that may have been destroyed meanwhile.
+        std::lock_guard<std::mutex> lk(guard->mutex);
+        if (guard->alive)
+            postConnectionInfo(session, QStringLiteral("app %1 → %2").arg(who, what));
     };
     callbacks.connection_info_handler = [this, guard, session](ag::VpnConnectionInfoEvent *event) {
         const QString line = qt_trusttunnel_connection_info_line(event);

@@ -143,7 +143,8 @@ bool Backend::addApplicationFromPath(const QString &pathOrUrl) {
     if (target.isEmpty()) {
         // Said plainly, because the common case is a document or a folder landing
         // on the window by accident, and "invalid rule" would not explain that.
-        emit errorOccurred(tr("That is not a program. Drop an application, or a shortcut to one."));
+        emit errorOccurred(tr("That is not a program. Drop an application here, "
+                              "or pick one with Choose…"));
         return false;
     }
     return addAppRule(target);

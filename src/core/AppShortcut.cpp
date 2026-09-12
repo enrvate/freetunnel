@@ -4,6 +4,7 @@
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
+#include <QRegularExpression>
 #include <QStandardPaths>
 #include <QStringList>
 #include <QUrl>
@@ -145,13 +146,35 @@ QString resolveWindowsShortcut(const QString &lnkPath)
 // binary and the directory answers the question directly. Built on every
 // platform so a dropped bundle copied to another machine still resolves, and so
 // the logic is testable where the tests run.
+// CFBundleExecutable out of an XML Info.plist. Plists can also be binary, which
+// is why this is one of three attempts rather than the only one — but when it is
+// XML it is the bundle's own answer, and bundles whose executable is not named
+// after them are common enough to be worth asking.
+QString executableNameFromPlist(const QString &bundlePath)
+{
+    QFile plist(bundlePath + QStringLiteral("/Contents/Info.plist"));
+    if (!plist.open(QIODevice::ReadOnly))
+        return {};
+    const QString xml = QString::fromUtf8(plist.read(64 * 1024));
+    static const QRegularExpression re(
+            QStringLiteral("<key>CFBundleExecutable</key>\\s*<string>([^<]+)</string>"));
+    const QRegularExpressionMatch m = re.match(xml);
+    return m.hasMatch() ? m.captured(1).trimmed() : QString();
+}
+
 QString executableInsideBundle(const QString &bundlePath)
 {
     const QDir macos(bundlePath + QStringLiteral("/Contents/MacOS"));
     if (!macos.exists())
         return {};
-    // CFBundleExecutable is conventionally the bundle's own name, so try that
-    // first and fall back to whatever single program is in there.
+    // The bundle's declared executable, then its own name — the usual case —
+    // then whatever single program is in there.
+    const QString declared = executableNameFromPlist(bundlePath);
+    if (!declared.isEmpty()) {
+        const QString byPlist = macos.filePath(declared);
+        if (QFileInfo(byPlist).isFile())
+            return QDir::toNativeSeparators(byPlist);
+    }
     const QString byName = macos.filePath(QFileInfo(bundlePath).completeBaseName());
     if (QFileInfo(byName).isFile())
         return QDir::toNativeSeparators(byName);
@@ -243,6 +266,14 @@ QString resolveApplicationTarget(const QString &pathOrUrl)
         return {};
     if (path.startsWith(QLatin1String("file:")))
         path = QUrl(path).toLocalFile();
+    // A drag from Finder hands over a directory with a trailing slash — and a
+    // .app IS a directory. With the slash left on, QFileInfo::suffix() is empty,
+    // the bundle is not recognised as one, and dropping an application from
+    // /Applications was answered with "that is not a program".
+    while (path.size() > 1
+           && (path.endsWith(QLatin1Char('/')) || path.endsWith(QLatin1Char('\\')))) {
+        path.chop(1);
+    }
     if (path.isEmpty())
         return {};
 

@@ -5,6 +5,37 @@ built from the section below it, so this file is the description of the release 
 write it before tagging. For the full commit history of a release, follow the
 compare link at the bottom of its release notes.
 
+## 1.1.10
+
+### Security
+
+- If you chose **HTTP/3** as the protocol for a config, the server's certificate
+  was not being checked at all. The connection was made before the check could
+  be armed, so none of the three things that normally establish trust ran: not
+  the system's list of certificate authorities, not a certificate you imported
+  with the config, not even the "skip verification" switch. In practice that
+  means someone positioned between you and the server — on a shared Wi-Fi
+  network, or at your provider — could have presented any certificate, and the
+  app would have accepted it and sent your traffic and password through them.
+  This is fixed in the VPN core this release moves to.
+
+  Configs on HTTP/2 were never affected, and HTTP/2 is what new configs use
+  unless you change it. If you use HTTP/3, please update.
+
+  One consequence to expect: a self-signed server on HTTP/3 will now be refused
+  with a certificate error if the config does not carry the server's certificate
+  or have verification switched off. Re-import the config from its link — the
+  certificate travels inside it — or turn verification off deliberately.
+
+### Fixed
+
+- HTTP/3: the app could keep saying it was connected after the connection had
+  actually died, leaving traffic going nowhere until you reconnected by hand.
+- HTTP/3: a config listing several server addresses could crash the privileged
+  helper while connecting, which ends the connection attempt.
+- HTTP/3: each connection attempt to a server with several addresses leaked a
+  network handle. Enough of them and the app would start reconnecting on its own.
+
 ## 1.1.9
 
 ### Fixed

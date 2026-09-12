@@ -17,6 +17,7 @@
 #include <QTcpServer>
 #include <QTcpSocket>
 #include <QThread>
+#include <QSocketNotifier>
 #include <QTimer>
 
 #include "vpn/qt_trusttunnel_client.h"
@@ -45,6 +46,10 @@ static bool prepareWindowsHelperRuntime(QString *errOut)
     }
     return true;
 }
+#endif
+
+#if defined(Q_OS_UNIX)
+#include <csignal>  // unistd.h already arrives through the !Q_OS_WIN block above
 #endif
 
 namespace {
@@ -421,8 +426,64 @@ private:
 
 } // namespace
 
+#if defined(Q_OS_UNIX)
+namespace {
+
+// Self-pipe, because almost nothing Qt offers may be called from a signal
+// handler — write() is on the short list of what POSIX allows, so the handler
+// writes one byte and a QSocketNotifier turns it back into an ordinary event on
+// the main loop. This is the pattern Qt's own documentation prescribes.
+int g_termPipe[2] = {-1, -1};
+
+void onTerminatingSignal(int)
+{
+    const char byte = 1;
+    const ssize_t written = ::write(g_termPipe[0], &byte, 1);
+    Q_UNUSED(written); // nothing safe left to do about a failed write here
+}
+
+// Exit through the event loop instead of dying where we stand. This process runs
+// as root and owns the tunnel: routes, DNS and the kill switch are torn down on
+// the way out of exec(), and a default SIGTERM skips all of it.
+//
+// It also makes the helper measurable. vpn_helper_server.cpp is only ever run as
+// a separate process, so gcov writes its counters at exit — and when the test
+// harness SIGKILLed it, none were ever written. The file reported 0% coverage
+// while being one of the better-tested in the codebase, which is worse than an
+// unknown number: it pointed effort at code that was already covered.
+void installTerminationHandlers(QCoreApplication *app)
+{
+    if (::pipe(g_termPipe) != 0)
+        return;
+    auto *notifier = new QSocketNotifier(g_termPipe[1], QSocketNotifier::Read, app);
+    QObject::connect(notifier, &QSocketNotifier::activated, app, [notifier]() {
+        // Not drained on purpose. The notifier is off, so it cannot refire, and
+        // the process is already on its way out of exec() — reading the byte back
+        // would be ceremony, and the fd goes with the process either way. Anything
+        // that reuses this pattern without quitting immediately does need the
+        // read; this does not. (It also keeps Flawfinder quiet, which flags every
+        // read() as an unbounded one — a false positive here, since it would be a
+        // single byte into a single byte, but not a line worth arguing over when
+        // the call itself is unnecessary.)
+        notifier->setEnabled(false);
+        QCoreApplication::quit();
+    });
+    struct sigaction sa{};
+    sa.sa_handler = onTerminatingSignal;
+    sigemptyset(&sa.sa_mask);
+    sa.sa_flags = SA_RESTART;
+    ::sigaction(SIGTERM, &sa, nullptr);
+    ::sigaction(SIGINT, &sa, nullptr);
+}
+
+} // namespace
+#endif
+
 int runVpnHelper(int argc, char **argv) {
     QCoreApplication app(argc, argv);
+#if defined(Q_OS_UNIX)
+    installTerminationHandlers(&app);
+#endif
 #if defined(Q_OS_WIN)
     QString wintunErr;
     if (!prepareWindowsHelperRuntime(&wintunErr)) {

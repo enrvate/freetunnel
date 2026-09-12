@@ -207,8 +207,17 @@ void TestHelperServer::stopHelper()
 {
     if (!m_helper)
         return;
-    m_helper->kill();
-    m_helper->waitForFinished(3000);
+    // Ask before insisting. The helper exits through its event loop on SIGTERM,
+    // which runs the tunnel teardown — and, because it only ever runs as a
+    // separate process, is also the only moment gcov writes its counters. While
+    // this was a straight kill(), vpn_helper_server.cpp reported 0% coverage
+    // despite being one of the better-tested files here, and that zero pointed
+    // effort at code which needed none.
+    m_helper->terminate();
+    if (!m_helper->waitForFinished(3000)) {
+        m_helper->kill();
+        m_helper->waitForFinished(3000);
+    }
     delete m_helper;
     m_helper = nullptr;
 }

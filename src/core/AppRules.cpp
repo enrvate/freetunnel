@@ -204,26 +204,34 @@ QString appDirectoryOf(const QString &path)
     if (directory.isEmpty() || directory == QLatin1String("/")
         || directory == QDir::toNativeSeparators(QStringLiteral("/")))
         return {};
+    // Read back through forward slashes. `directory` is in native separators —
+    // it is what gets returned and compared against other native paths — and
+    // asking QFileInfo about a backslash path outside Windows answers with the
+    // whole string. Getting this wrong is what put C:\usr\bin\bin past the
+    // guard below, so it is done once, here, for both tests.
+    const QString directoryName = QFileInfo(QDir::fromNativeSeparators(directory)).fileName();
+
     // The directory has to be named after the program in it. That one test is
     // what makes this safe: /usr/bin would have to hold a program called "bin"
     // to widen, and /usr/lib/firefox holds firefox.
     //
     // completeBaseName rather than fileName so a Windows program matches the
     // folder it was installed into — "Foo\foo.exe" is still foo's directory.
-    if (QFileInfo(directory).fileName().compare(info.completeBaseName(),
-                                                appPathCaseSensitivity())
-        != 0) {
+    if (directoryName.compare(info.completeBaseName(), appPathCaseSensitivity()) != 0)
         return {};
-    }
-    // Belt and braces for the one spelling the naming test cannot catch: a
-    // program actually called "bin" sitting in a directory called "bin".
-    static const QStringList kEveryonesDirectories = {
-            QStringLiteral("/bin"),          QStringLiteral("/sbin"),
-            QStringLiteral("/usr/bin"),      QStringLiteral("/usr/sbin"),
-            QStringLiteral("/usr/local/bin"), QStringLiteral("/usr/local/sbin"),
-            QStringLiteral("/usr/libexec"),  QStringLiteral("/snap/bin"),
+    // And the one spelling the naming test cannot catch on its own: a program
+    // actually called "bin", sitting in a directory called "bin". Written as
+    // names rather than as the paths those directories usually have, because
+    // /usr/bin is a Unix spelling and a list of Unix paths guards nothing on
+    // the platform where nobody can check it — which is how C:\usr\bin\bin
+    // slipped through until a Windows runner said so.
+    static const QStringList kNamesThatBelongToEveryone = {
+            QStringLiteral("bin"),
+            QStringLiteral("sbin"),
+            QStringLiteral("libexec"),
+            QStringLiteral("games"),
     };
-    if (kEveryonesDirectories.contains(QDir::fromNativeSeparators(directory)))
+    if (kNamesThatBelongToEveryone.contains(directoryName, appPathCaseSensitivity()))
         return {};
     return directory;
 }

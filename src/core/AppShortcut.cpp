@@ -89,18 +89,35 @@ QString valueForKey(const QString &contents, const QString &key)
     return {};
 }
 
+// The rule has to be the path the OPERATING SYSTEM will report for a running
+// process, not the one the launcher was told to start. On Linux /proc/<pid>/exe
+// is the kernel's resolved answer, and /usr/bin/<program> is very often a
+// symlink into /usr/lib or /opt — so a rule taken verbatim from a .desktop file
+// would be listed, look right, and never match anything.
+//
+// It does not help when the launcher entry points at a wrapper SCRIPT that execs
+// something else; nothing at this layer can follow that, and such a rule simply
+// will not match.
+QString canonicalOrSelf(const QString &path)
+{
+    const QString canonical = QFileInfo(path).canonicalFilePath();
+    return canonical.isEmpty() ? path : canonical;
+}
+
 QString absoluteExecutable(const QString &program)
 {
     if (program.isEmpty())
         return {};
-    if (QFileInfo(program).isAbsolute())
-        return QFileInfo(program).exists() ? QDir::toNativeSeparators(program) : QString();
+    if (QFileInfo(program).isAbsolute()) {
+        return QFileInfo(program).exists() ? QDir::toNativeSeparators(canonicalOrSelf(program))
+                                           : QString();
+    }
     // A bare name in Exec= is resolved against PATH, the same as the launcher
     // would. Falling back to the bare name would store a rule that happens to
     // work — bare names do match — but would lose the precision the user asked
     // for by pointing at a specific shortcut.
     const QString found = QStandardPaths::findExecutable(program);
-    return found.isEmpty() ? QString() : QDir::toNativeSeparators(found);
+    return found.isEmpty() ? QString() : QDir::toNativeSeparators(canonicalOrSelf(found));
 }
 
 #ifdef Q_OS_WIN
@@ -189,6 +206,14 @@ QString executableInsideBundle(const QString &bundlePath)
 }
 
 } // namespace
+
+// Exported so InstalledApps reads .desktop keys with this parser instead of a
+// byte-identical copy of it: two copies are two places to fix the next quirk in,
+// and the one that gets forgotten is the one that matters.
+QString desktopEntryValue(const QString &contents, const QString &key)
+{
+    return valueForKey(contents, key);
+}
 
 namespace {
 
@@ -338,7 +363,7 @@ QString resolveApplicationTarget(const QString &pathOrUrl)
     // rather than becoming a rule that silently never matches.
     if (!info.isFile())
         return {};
-    return QDir::toNativeSeparators(info.absoluteFilePath());
+    return QDir::toNativeSeparators(canonicalOrSelf(info.absoluteFilePath()));
 }
 
 } // namespace freetunnel

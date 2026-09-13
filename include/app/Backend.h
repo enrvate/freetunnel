@@ -322,6 +322,10 @@ private:
 
     VpnHelperClient m_client;
     AppSettings m_settings;
+    // Scanned once per Backend when the picker first opens; see
+    // installedApplications() for why this is not a function-local static.
+    QVariantList m_installedApps;
+    bool m_installedAppsScanned = false;
     QHotkey *m_hkToggle = nullptr;
     QHotkey *m_hkConnect = nullptr;
     QHotkey *m_hkDisconnect = nullptr;

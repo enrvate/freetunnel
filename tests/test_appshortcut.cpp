@@ -27,6 +27,7 @@ private slots:
     void aSandboxedAppResolvesToItsOwnNameNotTheLauncher_data();
     void aBundleDraggedFromFinderCarriesATrailingSlash();
     void aBundleDeclaresItsOwnExecutableName();
+    void aSymlinkedProgramIsStoredAsWhatTheKernelWillReport();
 };
 
 void TestAppShortcut::readsTheProgramOutOfADesktopEntry_data()
@@ -282,6 +283,36 @@ void TestAppShortcut::aBundleDeclaresItsOwnExecutableName()
 
     QCOMPARE(freetunnel::resolveApplicationTarget(bundle),
              QDir::toNativeSeparators(bundle + QStringLiteral("/Contents/MacOS/Electron")));
+}
+
+// /usr/bin/<program> is routinely a symlink into /usr/lib or /opt, and
+// /proc/<pid>/exe reports the resolved path. A rule taken verbatim from a
+// .desktop file would be stored, listed back, look entirely correct — and never
+// match the running program.
+void TestAppShortcut::aSymlinkedProgramIsStoredAsWhatTheKernelWillReport()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString real = dir.filePath(QStringLiteral("real-program"));
+    QFile bin(real);
+    QVERIFY(bin.open(QIODevice::WriteOnly));
+    bin.close();
+
+    const QString link = dir.filePath(QStringLiteral("linked-program"));
+    if (!QFile::link(real, link))
+        QSKIP("this filesystem does not support symlinks");
+
+    const QString expected = QDir::toNativeSeparators(QFileInfo(real).canonicalFilePath());
+    QCOMPARE(freetunnel::resolveApplicationTarget(link), expected);
+
+    // And through a .desktop entry, which is how the picker gets there.
+    const QString entry = dir.filePath(QStringLiteral("linked.desktop"));
+    QFile f(entry);
+    QVERIFY(f.open(QIODevice::WriteOnly | QIODevice::Text));
+    f.write(QStringLiteral("[Desktop Entry]\nType=Application\nExec=\"%1\" %u\n")
+                    .arg(link).toUtf8());
+    f.close();
+    QCOMPARE(freetunnel::resolveApplicationTarget(entry), expected);
 }
 
 QTEST_MAIN(TestAppShortcut)

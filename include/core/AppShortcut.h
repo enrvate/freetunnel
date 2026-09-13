@@ -38,4 +38,9 @@ QString executableFromDesktopEntry(const QString &contents);
 // because the list of installed applications needs the same answer.
 QString sandboxedProgramFromDesktopEntry(const QString &contents);
 
+// The value of one key in a .desktop entry's [Desktop Entry] group, or empty.
+// Shared rather than reimplemented: InstalledApps had a byte-identical copy, and
+// two copies of a parser are two places to fix the next quirk in.
+QString desktopEntryValue(const QString &contents, const QString &key);
+
 } // namespace freetunnel

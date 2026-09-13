@@ -17,31 +17,6 @@ namespace freetunnel {
 
 namespace {
 
-// Shared with AppShortcut's parser in shape but not in purpose: that one looks
-// for the program, this one for what to show. Kept separate rather than
-// generalised, because the two want different things from the same file and a
-// single "get a key" helper would end up with a mode flag.
-QString desktopValue(const QString &contents, const QString &key)
-{
-    bool inEntry = false;
-    const QList<QStringView> lines = QStringView(contents).split(QLatin1Char('\n'));
-    for (const QStringView &raw : lines) {
-        const QStringView line = raw.trimmed();
-        if (line.startsWith(QLatin1Char('['))) {
-            inEntry = (line == QLatin1String("[Desktop Entry]"));
-            continue;
-        }
-        if (!inEntry || line.startsWith(QLatin1Char('#')))
-            continue;
-        const qsizetype eq = line.indexOf(QLatin1Char('='));
-        if (eq <= 0)
-            continue;
-        if (line.left(eq).trimmed() == key)
-            return line.mid(eq + 1).trimmed().toString();
-    }
-    return {};
-}
-
 bool isTrue(const QString &v)
 {
     return v.compare(QLatin1String("true"), Qt::CaseInsensitive) == 0;
@@ -140,18 +115,18 @@ void appendMacApps(QList<InstalledApp> *out)
 
 bool desktopEntryIsVisibleApplication(const QString &contents)
 {
-    if (desktopValue(contents, QStringLiteral("Type")) != QLatin1String("Application"))
+    if (desktopEntryValue(contents, QStringLiteral("Type")) != QLatin1String("Application"))
         return false;
-    if (isTrue(desktopValue(contents, QStringLiteral("NoDisplay"))))
+    if (isTrue(desktopEntryValue(contents, QStringLiteral("NoDisplay"))))
         return false;
-    if (isTrue(desktopValue(contents, QStringLiteral("Hidden"))))
+    if (isTrue(desktopEntryValue(contents, QStringLiteral("Hidden"))))
         return false;
     return true;
 }
 
 QString displayNameFromDesktopEntry(const QString &contents)
 {
-    return desktopValue(contents, QStringLiteral("Name"));
+    return desktopEntryValue(contents, QStringLiteral("Name"));
 }
 
 QList<InstalledApp> installedApplications()

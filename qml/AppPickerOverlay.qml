@@ -56,6 +56,11 @@ Item {
         width: pickerRoot.cardWidth
         height: Math.min(parent.height - pickerRoot.safeTop - 12, 460)
         radius: 14; color: theme.bg; border.color: theme.border; border.width: 1
+        // Swallows clicks that land on the card's own margins and the gaps
+        // between its children. Without it they reach the backdrop behind and
+        // close the picker — mid-search, losing what was typed. The config
+        // overlay has the same handler for the same reason.
+        TapHandler { onTapped: card.forceActiveFocus() }
 
         ColumnLayout {
             anchors.fill: parent; anchors.margins: 14; spacing: 10

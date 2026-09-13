@@ -124,18 +124,20 @@ bool Backend::addAppRule(const QString &rule) {
 }
 
 QVariantList Backend::installedApplications() {
-    static QVariantList cached;
-    static bool scanned = false;
-    if (!scanned) {
-        scanned = true;
+    // Per-instance, not a function-local static: a static would be shared by
+    // every Backend in the process — including two in one test run — and could
+    // never be cleared, so installing a program would need a restart before the
+    // picker could see it.
+    if (!m_installedAppsScanned) {
+        m_installedAppsScanned = true;
         for (const freetunnel::InstalledApp &app : freetunnel::installedApplications()) {
             QVariantMap row;
             row[QStringLiteral("name")] = app.name;
             row[QStringLiteral("path")] = app.executablePath;
-            cached.append(row);
+            m_installedApps.append(row);
         }
     }
-    return cached;
+    return m_installedApps;
 }
 
 bool Backend::addApplicationFromPath(const QString &pathOrUrl) {
@@ -291,10 +293,20 @@ void Backend::applySplitRules() {
                     std::back_inserter(routes), [](const QString &r) { return r.toStdString(); });
     m_client.setExcludedRoutes(routes);
 
+    // Gated on `on` exactly as the domain list is, and the reason is a leak.
+    // Turning split tunnelling off sets the core to general mode, and in general
+    // mode this list means "these programs LEAVE the tunnel". Pushing it anyway
+    // meant a user who had set up "Through VPN — firefox" and then switched the
+    // whole feature off, expecting everything to go through the VPN, got the
+    // opposite for firefox: its traffic left the tunnel while the interface said
+    // split tunnelling was disabled.
     std::vector<std::string> appRules;
-    appRules.reserve(static_cast<size_t>(m_settings.app_rules.size()));
-    std::transform(m_settings.app_rules.cbegin(), m_settings.app_rules.cend(),
-                    std::back_inserter(appRules), [](const QString &r) { return r.toStdString(); });
+    if (on) {
+        appRules.reserve(static_cast<size_t>(m_settings.app_rules.size()));
+        std::transform(m_settings.app_rules.cbegin(), m_settings.app_rules.cend(),
+                       std::back_inserter(appRules),
+                       [](const QString &r) { return r.toStdString(); });
+    }
     m_client.setAppRules(appRules);
 
     // Warned from here rather than from each of the six callers, so no future entry

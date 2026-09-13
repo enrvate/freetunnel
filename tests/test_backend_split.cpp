@@ -38,6 +38,7 @@ private slots:
     void appRulesAreRulesToo();
     void appRulesAreValidatedDedupedAndPersisted();
     void aDroppedShortcutBecomesARuleForTheProgramItNames();
+    void turningSplitTunnellingOffDoesNotInvertTheAppRules();
 
 private:
     QTemporaryDir m_home;
@@ -386,6 +387,32 @@ void TestBackendSplit::selectiveModeIsInactiveWhileSplitIsOff()
     // all, so selective mode must not be requested either.
     QVERIFY(!backend.selectiveModeActive());
     QVERIFY(!backend.selectiveModeWouldLeak());
+}
+
+// The nastiest shape this feature can take. In "Through VPN" the list means
+// "only these go through"; in bypass mode the same list means "these stay out".
+// Switching the whole feature off puts the core in general mode — so a list that
+// was still being pushed reversed its meaning, and a user who turned split
+// tunnelling off expecting everything to be protected got the one program they
+// cared about sent out in the clear, with the interface saying it was off.
+void TestBackendSplit::turningSplitTunnellingOffDoesNotInvertTheAppRules()
+{
+    Backend backend;
+    backend.setSplitEnabled(true);
+    backend.setVpnMode(QStringLiteral("selective"));
+    QVERIFY(backend.addAppRule(QStringLiteral("firefox")));
+    QVERIFY(backend.selectiveModeActive());
+
+    backend.setSplitEnabled(false);
+    // The rule stays in the settings — the user did not delete it, and it comes
+    // back when they switch the feature on again.
+    QCOMPARE(backend.appRules().size(), 1);
+    // But it must no longer be in force, in either direction.
+    QVERIFY(!backend.selectiveModeActive());
+    QVERIFY(!backend.selectiveModeWouldLeak());
+
+    backend.setSplitEnabled(true);
+    QVERIFY(backend.selectiveModeActive());
 }
 
 QTEST_MAIN(TestBackendSplit)

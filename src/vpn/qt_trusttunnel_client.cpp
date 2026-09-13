@@ -420,43 +420,32 @@ void QtTrustTunnelClient::postConnectionInfo(quint64 session, const QString &lin
             Qt::QueuedConnection);
 }
 
-ag::VpnCallbacks QtTrustTunnelClient::makeCallbacks(const GuardPtr &guard) {
-    // Core callbacks are queued to our event loop, so events from a client that
-    // has since been torn down (config switch: disconnect + connect a new one)
-    // can arrive after the next session already started. A stale DISCONNECTED
-    // would then trigger a bogus reconnect of the NEW session. Tag every event
-    // with the session generation it belongs to and drop mismatches on arrival.
-    //
-    // An ABANDONED client outlives this object entirely, so the hop back to it
-    // is taken under the guard: while the mutex is held `alive` cannot flip, and
-    // once the destructor has cleared it no callback dereferences `this` again.
-    // Note the payload is extracted BEFORE the lock — that touches the event,
-    // not this object, and must not happen while holding it.
-    const quint64 session = ++m_sessionGen;
-    ag::VpnCallbacks callbacks;
-    callbacks.verify_handler = qt_trusttunnel_verify_server_certificate;
-    callbacks.protect_handler = [this, guard](ag::SocketProtectEvent *event) {
-        std::lock_guard<std::mutex> lk(guard->mutex);
-        if (guard->alive)
-            protectOutboundSocket(event);
-    };
-    callbacks.state_changed_handler = [this, guard, session](ag::VpnStateChangedEvent *event) {
-        const StateChangedPayload payload = extractStateChangedPayload(event);
-        std::lock_guard<std::mutex> lk(guard->mutex);
-        if (guard->alive)
-            postCoreStateChanged(session, static_cast<int>(payload.state), payload.errCode,
-                                 payload.errText);
-    };
-    callbacks.tunnel_stats_handler = [this, guard,
-                                      session](ag::VpnTunnelConnectionStatsEvent *event) {
-        if (!event)
-            return;
-        const quint64 up = event->upload;
-        const quint64 down = event->download;
-        std::lock_guard<std::mutex> lk(guard->mutex);
-        if (guard->alive)
-            postTunnelStats(session, up, down);
-    };
+namespace {
+
+// One line, in the order someone diagnosing reads it: did it run, as whom, how
+// much did it see, and how long did it take.
+QString describeScan(const freetunnel::ProcessLookup::ScanReport &r)
+{
+    return QStringLiteral("app rules: scan %1 — euid %2, pids %3 (%4 refused), sockets %5, "
+                          "entries %6, distinct %7, errno %8, %9 ms")
+            .arg(r.ok ? QStringLiteral("ok") : QStringLiteral("FAILED"))
+            .arg(r.euid)
+            .arg(r.pidsScanned)
+            .arg(r.pidsSkipped)
+            .arg(r.socketsSeen)
+            .arg(r.entries)
+            .arg(r.distinctPids)
+            .arg(r.lastErrno)
+            .arg(r.elapsedMs);
+}
+
+} // namespace
+
+// Split out of makeCallbacks, which had grown to 145 lines around it. The seam
+// is the one the code already had: this is a self-contained lambda with its own
+// captures and no reference to anything else being built there.
+std::function<void(const ag::VpnConnectRequestSnapshot &, ag::VpnConnectDecision *)>
+QtTrustTunnelClient::makeConnectRequestHandler(const GuardPtr &guard, quint64 session) {
     // Per-application split tunnelling. This runs on the wrapper's own loop, one
     // connection at a time, which is what lets it read the system's socket
     // tables without stalling traffic. The rules come from a shared snapshot so
@@ -465,8 +454,8 @@ ag::VpnCallbacks QtTrustTunnelClient::makeCallbacks(const GuardPtr &guard) {
     auto lookup = std::make_shared<freetunnel::ProcessLookup>();
     auto scanWarned = std::make_shared<bool>(false);
     auto appRules = m_appRules;
-    callbacks.connect_request_handler = [this, guard, session, appRules, lookup,
-                                         scanWarned](const ag::VpnConnectRequestSnapshot &req,
+    return [this, guard, session, appRules, lookup,
+            scanWarned](const ag::VpnConnectRequestSnapshot &req,
                                                  ag::VpnConnectDecision *decision) {
         if (decision == nullptr)
             return;
@@ -520,19 +509,7 @@ ag::VpnCallbacks QtTrustTunnelClient::makeCallbacks(const GuardPtr &guard) {
         // in either case.
         if (!*scanWarned) {
             *scanWarned = true;
-            const freetunnel::ProcessLookup::ScanReport r = lookup->lastScan();
-            const QString line =
-                    QStringLiteral("app rules: scan %1 — euid %2, pids %3 (%4 refused), sockets "
-                                   "%5, entries %6, distinct %7, errno %8, %9 ms")
-                            .arg(r.ok ? QStringLiteral("ok") : QStringLiteral("FAILED"))
-                            .arg(r.euid)
-                            .arg(r.pidsScanned)
-                            .arg(r.pidsSkipped)
-                            .arg(r.socketsSeen)
-                            .arg(r.entries)
-                            .arg(r.distinctPids)
-                            .arg(r.lastErrno)
-                            .arg(r.elapsedMs);
+            const QString line = describeScan(lookup->lastScan());
             std::lock_guard<std::mutex> lk(guard->mutex);
             if (guard->alive)
                 postConnectionInfo(session, line);
@@ -557,6 +534,46 @@ ag::VpnCallbacks QtTrustTunnelClient::makeCallbacks(const GuardPtr &guard) {
         if (guard->alive)
             postConnectionInfo(session, QStringLiteral("app %1 → %2").arg(who, what));
     };
+}
+
+ag::VpnCallbacks QtTrustTunnelClient::makeCallbacks(const GuardPtr &guard) {
+    // Core callbacks are queued to our event loop, so events from a client that
+    // has since been torn down (config switch: disconnect + connect a new one)
+    // can arrive after the next session already started. A stale DISCONNECTED
+    // would then trigger a bogus reconnect of the NEW session. Tag every event
+    // with the session generation it belongs to and drop mismatches on arrival.
+    //
+    // An ABANDONED client outlives this object entirely, so the hop back to it
+    // is taken under the guard: while the mutex is held `alive` cannot flip, and
+    // once the destructor has cleared it no callback dereferences `this` again.
+    // Note the payload is extracted BEFORE the lock — that touches the event,
+    // not this object, and must not happen while holding it.
+    const quint64 session = ++m_sessionGen;
+    ag::VpnCallbacks callbacks;
+    callbacks.verify_handler = qt_trusttunnel_verify_server_certificate;
+    callbacks.protect_handler = [this, guard](ag::SocketProtectEvent *event) {
+        std::lock_guard<std::mutex> lk(guard->mutex);
+        if (guard->alive)
+            protectOutboundSocket(event);
+    };
+    callbacks.state_changed_handler = [this, guard, session](ag::VpnStateChangedEvent *event) {
+        const StateChangedPayload payload = extractStateChangedPayload(event);
+        std::lock_guard<std::mutex> lk(guard->mutex);
+        if (guard->alive)
+            postCoreStateChanged(session, static_cast<int>(payload.state), payload.errCode,
+                                 payload.errText);
+    };
+    callbacks.tunnel_stats_handler = [this, guard,
+                                      session](ag::VpnTunnelConnectionStatsEvent *event) {
+        if (!event)
+            return;
+        const quint64 up = event->upload;
+        const quint64 down = event->download;
+        std::lock_guard<std::mutex> lk(guard->mutex);
+        if (guard->alive)
+            postTunnelStats(session, up, down);
+    };
+    callbacks.connect_request_handler = makeConnectRequestHandler(guard, session);
     callbacks.connection_info_handler = [this, guard, session](ag::VpnConnectionInfoEvent *event) {
         const QString line = qt_trusttunnel_connection_info_line(event);
         std::lock_guard<std::mutex> lk(guard->mutex);

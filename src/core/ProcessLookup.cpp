@@ -248,13 +248,15 @@ void ProcessLookup::refreshIfStale()
         // Not cached: m_everBuilt stays false so the next connection tries
         // again, instead of every connection for the next TTL inheriting one
         // failed call's emptiness.
-        qWarning("process lookup: proc_listpids sizing failed (errno %d)", errno);
+        m_report.lastErrno = errno;
+        finishScan(now, false);
         return;
     }
     QByteArray pidBuf(count, Qt::Uninitialized);
     count = ::proc_listpids(PROC_ALL_PIDS, 0, pidBuf.data(), pidBuf.size());
     if (count <= 0) {
-        qWarning("process lookup: proc_listpids failed (errno %d)", errno);
+        m_report.lastErrno = errno;
+        finishScan(now, false);
         return;
     }
     const int nPids = count / static_cast<int>(sizeof(pid_t));
@@ -264,9 +266,15 @@ void ProcessLookup::refreshIfStale()
         const pid_t pid = pids[i];
         if (pid <= 0)
             continue;
+        ++m_report.pidsScanned;
         int bufSize = ::proc_pidinfo(pid, PROC_PIDLISTFDS, 0, nullptr, 0);
-        if (bufSize <= 0)
-            continue; // a process we may not inspect; skipping it costs us one program
+        if (bufSize <= 0) {
+            // As root this should essentially never fire for a live process, so
+            // a large count here is itself the answer to why nothing matches.
+            ++m_report.pidsSkipped;
+            m_report.lastErrno = errno;
+            continue;
+        }
         QByteArray fdBuf(bufSize, Qt::Uninitialized);
         bufSize = ::proc_pidinfo(pid, PROC_PIDLISTFDS, 0, fdBuf.data(), fdBuf.size());
         if (bufSize <= 0)
@@ -276,6 +284,7 @@ void ProcessLookup::refreshIfStale()
         for (int f = 0; f < nFds; ++f) {
             if (fds[f].proc_fdtype != PROX_FDTYPE_SOCKET)
                 continue;
+            ++m_report.socketsSeen;
             // Over-allocated as insurance, and nothing more than that. It was
             // committed as "the macOS cause" on the theory that a kernel newer
             // than the build SDK would refuse an exact-sized buffer with ENOMEM
@@ -320,11 +329,6 @@ void ProcessLookup::refreshIfStale()
         }
     }
 
-    if (m_owners.isEmpty()) {
-        qWarning("process lookup found no sockets at all — every connection will read as "
-                 "unknown (scanned %d pids)",
-                 nPids);
-    }
     finishScan(now, true);
 }
 
@@ -335,7 +339,7 @@ namespace {
 // inode -> pid, by walking /proc/<pid>/fd and reading the socket: links. This
 // is what `ss -p` does, and it is the expensive half of a Linux lookup, which
 // is why it happens once per refresh and not once per connection.
-QHash<std::uint64_t, qint64> socketInodeOwners()
+QHash<std::uint64_t, qint64> socketInodeOwners(ProcessLookup::ScanReport *report)
 {
     QHash<std::uint64_t, qint64> out;
     QDir proc(QStringLiteral("/proc"));
@@ -345,6 +349,7 @@ QHash<std::uint64_t, qint64> socketInodeOwners()
         const qint64 pid = entry.toLongLong(&isPid);
         if (!isPid || pid <= 0)
             continue;
+        ++report->pidsScanned;
         QDir fdDir(QStringLiteral("/proc/%1/fd").arg(pid));
         // Not QDir::Files: these are symlinks pointing at sockets, and QDir
         // classifies a symlink by what it resolves to, so a socket link is not
@@ -365,6 +370,7 @@ QHash<std::uint64_t, qint64> socketInodeOwners()
             const QByteArray target(buf, static_cast<int>(n));
             if (!target.startsWith("socket:[") || !target.endsWith(']'))
                 continue;
+            ++report->socketsSeen;
             bool ok = false;
             const qulonglong inode = target.mid(8, target.size() - 9).toULongLong(&ok);
             if (ok && inode != 0)
@@ -403,7 +409,7 @@ void ProcessLookup::refreshIfStale()
         sockets.append(parseProcNetTable(QString::fromLatin1(f.readAll()), t.proto));
     }
     if (!sockets.isEmpty()) {
-        const QHash<std::uint64_t, qint64> byInode = socketInodeOwners();
+        const QHash<std::uint64_t, qint64> byInode = socketInodeOwners(&m_report);
         for (const SocketOwner &s : sockets) {
             const auto it = byInode.constFind(s.inode);
             if (it == byInode.constEnd())

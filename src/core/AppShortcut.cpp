@@ -190,14 +190,10 @@ QString executableInsideBundle(const QString &bundlePath)
 
 } // namespace
 
-QString sandboxedProgramFromDesktopEntry(const QString &contents)
-{
-    const QStringList tokens = splitExec(valueForKey(contents, QStringLiteral("Exec")));
-    if (tokens.isEmpty())
-        return {};
-    const QString runner = QFileInfo(tokens.first()).fileName();
+namespace {
 
-    if (runner == QLatin1String("flatpak")) {
+QString flatpakProgram(const QStringList &tokens)
+{
         // The entry usually says outright which program inside the sandbox it
         // starts: "flatpak run --command=anydesk … com.anydesk.Anydesk".
         for (const QString &t : tokens) {
@@ -214,26 +210,39 @@ QString sandboxedProgramFromDesktopEntry(const QString &contents)
             if (!last.isEmpty())
                 return last.toLower();
         }
-        return {};
-    }
+    return {};
+}
 
-    if (runner == QLatin1String("snap")) {
-        // "snap run foo"
-        for (int i = 1; i < tokens.size(); ++i) {
-            if (tokens[i] == QLatin1String("run"))
-                continue;
-            if (tokens[i].startsWith(QLatin1Char('-')))
-                continue;
-            return tokens[i].section(QLatin1Char('.'), -1);
-        }
-        return {};
+QString snapProgram(const QStringList &tokens)
+{
+    // "snap run foo"
+    for (int i = 1; i < tokens.size(); ++i) {
+        if (tokens[i] == QLatin1String("run"))
+            continue;
+        if (tokens[i].startsWith(QLatin1Char('-')))
+            continue;
+        return tokens[i].section(QLatin1Char('.'), -1);
     }
+    return {};
+}
 
+} // namespace
+
+QString sandboxedProgramFromDesktopEntry(const QString &contents)
+{
+    const QStringList tokens = splitExec(valueForKey(contents, QStringLiteral("Exec")));
+    if (tokens.isEmpty())
+        return {};
+    const QString runner = QFileInfo(tokens.first()).fileName();
+
+    if (runner == QLatin1String("flatpak"))
+        return flatpakProgram(tokens);
+    if (runner == QLatin1String("snap"))
+        return snapProgram(tokens);
     // /snap/bin/foo is a wrapper script, not the program: the process that ends
     // up in the socket table is the one inside /snap/foo/current/.
     if (tokens.first().startsWith(QLatin1String("/snap/bin/")))
         return runner;
-
     return {};
 }
 
@@ -269,7 +278,12 @@ QString executableFromDesktopEntry(const QString &contents)
     return {};
 }
 
-QString resolveApplicationTarget(const QString &pathOrUrl)
+namespace {
+
+// Whatever a drop or a dialog handed over, reduced to a plain path. Its own
+// function because it is a distinct step with its own hazard, and inline it was
+// just three more branches in a chain of suffix cases.
+QString droppedPathOf(const QString &pathOrUrl)
 {
     QString path = pathOrUrl.trimmed();
     if (path.isEmpty())
@@ -284,6 +298,14 @@ QString resolveApplicationTarget(const QString &pathOrUrl)
            && (path.endsWith(QLatin1Char('/')) || path.endsWith(QLatin1Char('\\')))) {
         path.chop(1);
     }
+    return path;
+}
+
+} // namespace
+
+QString resolveApplicationTarget(const QString &pathOrUrl)
+{
+    const QString path = droppedPathOf(pathOrUrl);
     if (path.isEmpty())
         return {};
 

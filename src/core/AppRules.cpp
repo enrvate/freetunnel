@@ -126,6 +126,29 @@ QString appBundleOf(const QString &path)
     return QDir::toNativeSeparators(slashed.left(marker + 4)); // keep ".app"
 }
 
+namespace {
+
+// One rule against one program. Pulled out of the loop so the loop is a loop:
+// the decision below is three separate questions, and they read as three.
+bool oneRuleMatches(const QString &norm, const QString &path, const QString &name,
+                    Qt::CaseSensitivity cs)
+{
+    if (norm.isEmpty())
+        return false;
+    if (!looksLikePath(norm))
+        return !name.isEmpty() && name.compare(norm, cs) == 0;
+    if (!path.isEmpty() && path.compare(norm, cs) == 0)
+        return true;
+    // Same application, different binary inside it. Only when BOTH are in a
+    // bundle — a bare directory prefix match would make a rule for one program
+    // cover every program beside it.
+    const QString ruleBundle = appBundleOf(norm);
+    return !ruleBundle.isEmpty() && !path.isEmpty()
+            && ruleBundle.compare(appBundleOf(path), cs) == 0;
+}
+
+} // namespace
+
 bool appMatchesRules(const AppIdentity &app, const QStringList &rules)
 {
     if (app.executablePath.isEmpty() && app.name.isEmpty())
@@ -140,23 +163,8 @@ bool appMatchesRules(const AppIdentity &app, const QStringList &rules)
     const QString name = !app.name.isEmpty() ? app.name : QFileInfo(path).fileName();
 
     for (const QString &rule : rules) {
-        const QString norm = normalizedAppRule(rule);
-        if (norm.isEmpty())
-            continue;
-        if (looksLikePath(norm)) {
-            if (!path.isEmpty() && path.compare(norm, cs) == 0)
-                return true;
-            // Same application, different binary inside it. Only when BOTH are
-            // in a bundle — a bare directory prefix match would make a rule for
-            // one program cover every program beside it.
-            const QString ruleBundle = appBundleOf(norm);
-            if (!ruleBundle.isEmpty() && !path.isEmpty()
-                    && ruleBundle.compare(appBundleOf(path), cs) == 0) {
-                return true;
-            }
-        } else if (!name.isEmpty() && name.compare(norm, cs) == 0) {
+        if (oneRuleMatches(normalizedAppRule(rule), path, name, cs))
             return true;
-        }
     }
     return false;
 }

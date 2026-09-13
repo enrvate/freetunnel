@@ -18,6 +18,7 @@
 #include <winsock2.h>
 #else
 #include <netinet/in.h>
+#include <unistd.h>
 #include <sys/socket.h>
 #endif
 
@@ -188,6 +189,15 @@ void TestProcessLookup::theScanReportsWhatItSaw()
     QVERIFY2(r.distinctPids > 1,
              qPrintable(QStringLiteral("only %1 process visible — the scan cannot see others")
                                 .arg(r.distinctPids)));
+
+    // The counters have to be filled, not merely declared: a report of zeroes
+    // reads as "this machine has nothing" and would send the next person
+    // looking in the wrong place entirely.
+    QVERIFY2(r.pidsScanned > 1, "the walk visited more than one process");
+    QVERIFY2(r.socketsSeen > 0, "and saw sockets while doing it");
+#ifndef Q_OS_WIN
+    QCOMPARE(r.euid, static_cast<int>(::geteuid()));
+#endif
 }
 
 QTEST_MAIN(TestProcessLookup)

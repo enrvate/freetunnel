@@ -135,6 +135,10 @@ private:
     void postConnectionInfo(quint64 session, const QString &line);
 
     ag::VpnCallbacks makeCallbacks(const GuardPtr &guard);
+    // Split out of makeCallbacks: a self-contained callback with its own
+    // captures, which is where the seam already was.
+    std::function<void(const ag::VpnConnectRequestSnapshot &, ag::VpnConnectDecision *)>
+    makeConnectRequestHandler(const GuardPtr &guard, quint64 session);
     bool joinOrAbandonConnectThread(int waitMs);
     void startConnectAttempt();
     void scheduleReconnect(const QString &reason);

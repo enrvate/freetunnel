@@ -44,6 +44,17 @@ QStringList sanitizedAppRules(const QStringList &rules);
 // "/Applications/ChatGPT.app/Contents/MacOS/ChatGPT" -> "/Applications/ChatGPT.app"
 QString appBundleOf(const QString &path);
 
+// The directory a program has to itself, or empty when it does not have one.
+// "/usr/lib/firefox/firefox" -> "/usr/lib/firefox", because the directory is
+// named after the program in it; "/usr/bin/firefox" -> empty, because /usr/bin
+// belongs to everyone.
+//
+// This is the same idea as a .app bundle, spelled the way the other platforms
+// spell it. A program installed in its own directory keeps its helpers there
+// beside it, and the naming test is what keeps it from meaning "everything in
+// /usr/bin": a program would have to be called "bin" to widen that.
+QString appDirectoryOf(const QString &path);
+
 // Does any rule name this program? A path rule matches the whole path; a bare
 // name matches the file name of any path.
 //
@@ -52,6 +63,13 @@ QString appBundleOf(const QString &path);
 // separate helper process that lives inside its own bundle, so the connections
 // a user wants routed never come from the executable they picked. Matching the
 // bundle is what makes a rule mean the application rather than one binary.
+//
+// A rule that names a program in a directory of its own does the same, for the
+// same reason. Reported from a Linux desktop: a rule on the Firefox the menu
+// entry points at, /usr/lib/firefox/firefox, matched nothing at all, because
+// that file is a five-kilobyte stub whose whole job is to exec firefox-bin —
+// and exec keeps the pid, so every running process says firefox-bin. The rule
+// named a file that is never a running program.
 bool appMatchesRules(const AppIdentity &app, const QStringList &rules);
 
 // The decision for one connection. `selectiveMode` is the existing split-tunnel

@@ -105,6 +105,13 @@ public:
         // expensive enough to be worth skipping. macOS and Windows read every
         // process anyway and leave this at zero.
         int pidsWatched = 0;
+        // Processes with no executable to name at all: kernel threads, which
+        // have none, and processes that exited between the listing and the
+        // question. Counted apart from a refusal because they are not one —
+        // this machine reports 459 of them out of 767 while running as root,
+        // and reading that as "459 refused" sent a real investigation looking
+        // for a permissions problem that was not there.
+        int pidsWithoutProgram = 0;
         int pidsSkipped = 0;  // processes the system would not describe
         int socketsSeen = 0;  // descriptors examined; 0 on Windows, which hands
                               // over a finished table instead of being walked

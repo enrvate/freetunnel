@@ -50,6 +50,9 @@ private slots:
     void caseFollowsTheFilesystem();
     void quotesAndSpacesSurviveTheRoundTrip();
     void aRuleMeansTheApplicationNotOneBinaryInsideIt();
+    void aRuleCoversTheDirectoryAProgramHasToItself();
+    void aSharedDirectoryIsNeverOneApplication();
+    void aSharedDirectoryIsNeverOneApplication_data();
 };
 
 // The ordinary case: the user types "firefox" and means firefox, wherever the
@@ -228,6 +231,71 @@ void TestAppRules::aRuleMeansTheApplicationNotOneBinaryInsideIt()
     QVERIFY(freetunnel::appBundleOf(QStringLiteral("/usr/bin/curl")).isEmpty());
     // A directory that merely ends in .app is not a bundle path either.
     QVERIFY(freetunnel::appBundleOf(QStringLiteral("/tmp/notabundle.app")).isEmpty());
+}
+
+// Reported from a real Linux desktop, and the same fault as the macOS one above
+// wearing different clothes: a rule on Firefox matched nothing at all.
+//
+// The menu entry points at /usr/lib/firefox/firefox, which is a five-kilobyte
+// stub whose whole job is to exec firefox-bin. exec keeps the pid, so every
+// process the system reports says firefox-bin, and the rule named a file that
+// is never a running program. A program installed in a directory of its own
+// keeps its helpers there beside it, exactly as a bundle does.
+void TestAppRules::aRuleCoversTheDirectoryAProgramHasToItself()
+{
+    const QString picked = absPath(QStringLiteral("usr/lib/firefox/firefox"));
+    const QStringList rules{picked};
+
+    QCOMPARE(freetunnel::appDirectoryOf(picked), absPath(QStringLiteral("usr/lib/firefox")));
+
+    // What the system actually reports for every Firefox process.
+    QVERIFY2(freetunnel::appMatchesRules(appAt(absPath(QStringLiteral("usr/lib/firefox/firefox-bin"))), rules),
+             "the binary the launcher execs into must be covered");
+    // And its other helpers, which are where much of the networking happens.
+    QVERIFY(freetunnel::appMatchesRules(
+            appAt(absPath(QStringLiteral("usr/lib/firefox/plugin-container"))), rules));
+    QVERIFY(freetunnel::appMatchesRules(appAt(picked), rules));
+
+    // The same layout as anyone else ships it.
+    const QStringList chrome{absPath(QStringLiteral("opt/google/chrome/chrome"))};
+    QVERIFY(freetunnel::appMatchesRules(
+            appAt(absPath(QStringLiteral("opt/google/chrome/chrome_crashpad_handler"))), chrome));
+
+    // But never a neighbour one directory over. If this passes, one bypass rule
+    // takes an unrelated program out of the tunnel.
+    QVERIFY(!freetunnel::appMatchesRules(
+            appAt(absPath(QStringLiteral("usr/lib/thunderbird/thunderbird-bin"))), rules));
+    QVERIFY(!freetunnel::appMatchesRules(
+            appAt(absPath(QStringLiteral("usr/lib/firefox-esr/firefox-bin"))), rules));
+    // Nor anything above it.
+    QVERIFY(!freetunnel::appMatchesRules(appAt(absPath(QStringLiteral("usr/lib/other"))), rules));
+}
+
+void TestAppRules::aSharedDirectoryIsNeverOneApplication_data()
+{
+    QTest::addColumn<QString>("rule");
+
+    // Everything a distribution puts programs in. A rule naming one of these
+    // must cover that one file and nothing beside it — these directories hold
+    // every program on the machine.
+    for (const char *dir : {"bin", "sbin", "usr/bin", "usr/sbin", "usr/local/bin",
+                            "usr/local/sbin", "usr/libexec", "snap/bin"}) {
+        const QString rule = absPath(QString::fromLatin1(dir) + QStringLiteral("/curl"));
+        QTest::newRow(dir) << rule;
+    }
+    // The one spelling the naming test alone cannot catch: a program actually
+    // called "bin", in a directory called "bin".
+    QTest::newRow("a program called bin") << absPath(QStringLiteral("usr/bin/bin"));
+}
+
+void TestAppRules::aSharedDirectoryIsNeverOneApplication()
+{
+    QFETCH(QString, rule);
+    QVERIFY2(freetunnel::appDirectoryOf(rule).isEmpty(),
+             qPrintable(QStringLiteral("%1 would widen to everything beside it").arg(rule)));
+    const QString neighbour = QFileInfo(QDir::fromNativeSeparators(rule)).path()
+            + QStringLiteral("/something-else");
+    QVERIFY(!freetunnel::appMatchesRules(appAt(QDir::toNativeSeparators(neighbour)), {rule}));
 }
 
 QTEST_MAIN(TestAppRules)

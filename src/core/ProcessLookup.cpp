@@ -404,11 +404,16 @@ void ProcessLookup::walk(std::chrono::steady_clock::time_point now)
         if (pid <= 0)
             continue;
         ++m_report.pidsScanned;
+        errno = 0;
         int bufSize = ::proc_pidinfo(pid, PROC_PIDLISTFDS, 0, nullptr, 0);
         if (bufSize <= 0) {
-            // As root this should essentially never fire for a live process, so
-            // a large count here is itself the answer to why nothing matches.
-            ++m_report.pidsSkipped;
+            // A process that has gone is not a process that refused. As root the
+            // refusals should be none, so a count here is itself the answer to
+            // why nothing matches.
+            if (errno == ESRCH)
+                ++m_report.pidsWithoutProgram;
+            else
+                ++m_report.pidsSkipped;
             m_report.lastErrno = errno;
             continue;
         }
@@ -713,12 +718,17 @@ void ProcessLookup::walk(std::chrono::steady_clock::time_point now)
     QHash<std::uint64_t, qint64> byInode;
     for (const qint64 pid : pids) {
         ++m_report.pidsScanned;
+        errno = 0;
         const AppIdentity id = identityForPid(pid);
         if (id.executablePath.isEmpty()) {
-            // A process that exited between the listing and this line, or one
-            // this user is not allowed to look at. Both are ordinary; a count in
-            // the hundreds is not, and says the walk is running unprivileged.
-            ++m_report.pidsSkipped;
+            // Two different things, and telling them apart is the whole value of
+            // the count. A kernel thread has no executable and never will —
+            // there are hundreds of them on an ordinary desktop — while a
+            // refusal means this walk cannot see the machine it is on.
+            if (errno == ENOENT || errno == ESRCH)
+                ++m_report.pidsWithoutProgram;
+            else
+                ++m_report.pidsSkipped;
             continue;
         }
         if (!appMatchesRules(id, m_watch))

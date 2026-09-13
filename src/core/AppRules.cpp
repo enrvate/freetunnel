@@ -35,6 +35,18 @@ bool looksLikePath(const QString &rule)
     return rule.contains(QLatin1Char('/')) || rule.contains(QLatin1Char('\\'));
 }
 
+// The directory a path is in, in the one spelling both sides of a comparison
+// use. QFileInfo::path() answers with forward slashes whatever it was given, so
+// without bringing it back to native separators a rule and a process path would
+// disagree on Windows and no directory rule would ever match there.
+QString directoryOfPath(const QString &path)
+{
+    const QString directory = QFileInfo(QDir::fromNativeSeparators(path)).path();
+    if (directory.isEmpty())
+        return {};
+    return QDir::toNativeSeparators(directory);
+}
+
 // A file name with nothing a path separator could hide in. Control characters
 // are rejected outright: they cannot appear in a name the OS will report back
 // to us, so a rule containing one can only ever be a mistake or an attempt to
@@ -139,12 +151,25 @@ bool oneRuleMatches(const QString &norm, const QString &path, const QString &nam
         return !name.isEmpty() && name.compare(norm, cs) == 0;
     if (!path.isEmpty() && path.compare(norm, cs) == 0)
         return true;
+    if (path.isEmpty())
+        return false;
     // Same application, different binary inside it. Only when BOTH are in a
     // bundle — a bare directory prefix match would make a rule for one program
     // cover every program beside it.
     const QString ruleBundle = appBundleOf(norm);
-    return !ruleBundle.isEmpty() && !path.isEmpty()
-            && ruleBundle.compare(appBundleOf(path), cs) == 0;
+    if (!ruleBundle.isEmpty() && ruleBundle.compare(appBundleOf(path), cs) == 0)
+        return true;
+    // And the same thing where there are no bundles: a rule naming a program
+    // that has a directory to itself covers what runs in that directory.
+    //
+    // The evidence has to come from the RULE, not from the process. The rule is
+    // what a person chose and what can be checked — the directory is named
+    // after it — while the process is whatever that choice turned into, and it
+    // is precisely the case where the two differ that this exists for:
+    // /usr/lib/firefox/firefox is a stub that execs firefox-bin, so requiring
+    // the process to sit in a directory named after ITSELF would match nothing.
+    const QString ruleDirectory = appDirectoryOf(norm);
+    return !ruleDirectory.isEmpty() && ruleDirectory.compare(directoryOfPath(path), cs) == 0;
 }
 
 } // namespace
@@ -167,6 +192,40 @@ bool appMatchesRules(const AppIdentity &app, const QStringList &rules)
             return true;
     }
     return false;
+}
+
+QString appDirectoryOf(const QString &path)
+{
+    // On the string, not the filesystem, for the same reason as appBundleOf:
+    // the path may name a process on a machine we are not standing on, and the
+    // test has to run where the tests run.
+    const QFileInfo info(QDir::fromNativeSeparators(path));
+    const QString directory = directoryOfPath(path);
+    if (directory.isEmpty() || directory == QLatin1String("/")
+        || directory == QDir::toNativeSeparators(QStringLiteral("/")))
+        return {};
+    // The directory has to be named after the program in it. That one test is
+    // what makes this safe: /usr/bin would have to hold a program called "bin"
+    // to widen, and /usr/lib/firefox holds firefox.
+    //
+    // completeBaseName rather than fileName so a Windows program matches the
+    // folder it was installed into — "Foo\foo.exe" is still foo's directory.
+    if (QFileInfo(directory).fileName().compare(info.completeBaseName(),
+                                                appPathCaseSensitivity())
+        != 0) {
+        return {};
+    }
+    // Belt and braces for the one spelling the naming test cannot catch: a
+    // program actually called "bin" sitting in a directory called "bin".
+    static const QStringList kEveryonesDirectories = {
+            QStringLiteral("/bin"),          QStringLiteral("/sbin"),
+            QStringLiteral("/usr/bin"),      QStringLiteral("/usr/sbin"),
+            QStringLiteral("/usr/local/bin"), QStringLiteral("/usr/local/sbin"),
+            QStringLiteral("/usr/libexec"),  QStringLiteral("/snap/bin"),
+    };
+    if (kEveryonesDirectories.contains(QDir::fromNativeSeparators(directory)))
+        return {};
+    return directory;
 }
 
 AppAction appActionFor(const AppIdentity &app, const QStringList &rules, bool selectiveMode)

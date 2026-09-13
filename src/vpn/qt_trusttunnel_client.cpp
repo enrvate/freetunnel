@@ -436,13 +436,15 @@ QString describeScan(const freetunnel::ProcessLookup &lookup)
 #else
     const QString source;
 #endif
-    return QStringLiteral("app rules: walk %1 %2 — euid %3, pids %4 (%5 watched, %6 refused), "
-                          "sockets %7, entries %8, distinct %9, errno %10, %11 ms%12")
+    return QStringLiteral("app rules: walk %1 %2 — euid %3, pids %4 (%5 watched, %6 without a "
+                          "program, %7 refused), sockets %8, entries %9, distinct %10, "
+                          "errno %11, %12 ms%13")
             .arg(lookup.walksTaken())
             .arg(r.ok ? QStringLiteral("ok") : QStringLiteral("FAILED"))
             .arg(r.euid)
             .arg(r.pidsScanned)
             .arg(r.pidsWatched)
+            .arg(r.pidsWithoutProgram)
             .arg(r.pidsSkipped)
             .arg(r.socketsSeen)
             .arg(r.entries)
@@ -529,7 +531,25 @@ QtTrustTunnelClient::makeConnectRequestHandler(const GuardPtr &guard, quint64 se
         // in either case.
         if (!*scanWarned) {
             *scanWarned = true;
-            const QString line = describeScan(*lookup);
+            QString line = describeScan(*lookup);
+            // When the walk saw the machine and none of it matched, the rules
+            // themselves are the next thing anyone would ask for, and asking
+            // costs a round trip through whoever is reporting the problem. This
+            // is what a real one turned on: a rule naming the file a menu entry
+            // points at, which is a launcher that execs something else and so is
+            // never a running program.
+            //
+            // Only where the walk decides which processes to open, which is
+            // Linux: the other two read every process and leave pidsWatched at
+            // zero whatever the rules say, so the same test there would print
+            // this on every session including the ones that work.
+#ifdef Q_OS_LINUX
+            if (lookup->lastScan().ok && lookup->lastScan().pidsWatched == 0
+                && lookup->lastScan().pidsScanned > 0) {
+                line += QStringLiteral("\n  no running program matches: %1")
+                                .arg(rules.join(QStringLiteral(", ")));
+            }
+#endif
             std::lock_guard<std::mutex> lk(guard->mutex);
             if (guard->alive)
                 postConnectionInfo(session, line);

@@ -424,9 +424,10 @@ namespace {
 
 // One line, in the order someone diagnosing reads it: did it run, as whom, how
 // much did it see, and how long did it take.
-QString describeScan(const freetunnel::ProcessLookup::ScanReport &r)
+QString describeScan(const freetunnel::ProcessLookup &lookup)
 {
-    return QStringLiteral("app rules: scan %1 — euid %2, pids %3 (%4 watched, %5 refused), "
+    const freetunnel::ProcessLookup::ScanReport &r = lookup.lastScan();
+    return QStringLiteral("app rules: walk %11 %1 — euid %2, pids %3 (%4 watched, %5 refused), "
                           "sockets %6, entries %7, distinct %8, errno %9, %10 ms")
             .arg(r.ok ? QStringLiteral("ok") : QStringLiteral("FAILED"))
             .arg(r.euid)
@@ -437,7 +438,8 @@ QString describeScan(const freetunnel::ProcessLookup::ScanReport &r)
             .arg(r.entries)
             .arg(r.distinctPids)
             .arg(r.lastErrno)
-            .arg(r.elapsedUs / 1000.0, 0, 'f', 2);
+            .arg(r.elapsedUs / 1000.0, 0, 'f', 2)
+            .arg(lookup.walksTaken());
 }
 
 } // namespace
@@ -517,7 +519,7 @@ QtTrustTunnelClient::makeConnectRequestHandler(const GuardPtr &guard, quint64 se
         // in either case.
         if (!*scanWarned) {
             *scanWarned = true;
-            const QString line = describeScan(lookup->lastScan());
+            const QString line = describeScan(*lookup);
             std::lock_guard<std::mutex> lk(guard->mutex);
             if (guard->alive)
                 postConnectionInfo(session, line);

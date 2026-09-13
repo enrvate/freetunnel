@@ -30,6 +30,10 @@ struct SocketOwner {
     std::uint64_t inode = 0; // Linux only; 0 elsewhere
 };
 
+// The pid recorded for a port the walk saw and could not attribute to any
+// watched program. See ProcessLookup::m_owners.
+constexpr qint64 kUnattributed = -1;
+
 // Parse one /proc/net/{tcp,tcp6,udp,udp6} table. Pure, and compiled on every
 // platform so the parsing can be tested where the tests actually run rather
 // than only on the machine that has a /proc.
@@ -87,18 +91,20 @@ public:
     // identical to success, and a report of "no, that line never appeared"
     // would have meant nothing at all.
     //
-    // pidsScanned against pidsWatched is what settles a report of "my rule does
-    // nothing". Zero scanned means this process cannot see other processes at
-    // all; hundreds scanned and zero watched means it can, and none of them is
-    // the program the rule names — a rule spelled for a binary the system
-    // reports under another path, which is a different fix entirely.
+    // distinctPids is the number that settles a report of "my rule does
+    // nothing". One means the walk can see only itself, and the fault is that
+    // it cannot look at other processes. Hundreds means it can, and the rule is
+    // naming something the system reports under a different path — a different
+    // fix entirely.
     struct ScanReport {
         bool ok = false;      // the walk ran to completion
         int euid = -1;        // who we were while walking
         int pidsScanned = 0;
-        int pidsWatched = 0;  // of those, ones a rule names — 0 answers "my rule
-                              // matches nothing that is running", which is a
-                              // different problem from every other one here
+        // Of those, the ones a rule names. Counted only where the walk has to
+        // decide which processes to open — on Linux, whose descriptor lists are
+        // expensive enough to be worth skipping. macOS and Windows read every
+        // process anyway and leave this at zero.
+        int pidsWatched = 0;
         int pidsSkipped = 0;  // processes the system would not describe
         int socketsSeen = 0;  // descriptors examined; 0 on Windows, which hands
                               // over a finished table instead of being walked
@@ -113,6 +119,16 @@ public:
     };
     const ScanReport &lastScan() const { return m_report; }
 
+    // How many times the machine has been walked since this object was made.
+    //
+    // The number that says whether the feature is costing anything: one walk per
+    // connection means the table is answering nothing and every connection is
+    // paying for a fresh one, which is what happens if the walk stops recording
+    // the ports it cannot attribute. Reported alongside the scan, and the thing
+    // the tests measure, because the alternative is asserting on wall-clock
+    // timings that are different on every machine.
+    qint64 walksTaken() const { return m_walks; }
+
 private:
     void refreshIfStale();
     // The platform's own walk. Called with the table already emptied and the
@@ -123,14 +139,6 @@ private:
     // the question, or unless looking again would spend more of this machine
     // than the feature is worth.
     bool shouldLookAgain(std::chrono::steady_clock::time_point asked) const;
-    // Decide how much of the previous walk's pid -> program map survives into
-    // this one, given every pid that exists now. Called by the platforms that
-    // enumerate processes; Windows, which never does, empties the map instead.
-    void carryIdentitiesForward(const QList<qint64> &pids);
-    // The program behind a pid, asking the system only the first time. Records
-    // the refusals too — a process this user may not inspect would otherwise be
-    // asked about on every walk, forever.
-    AppIdentity identityFor(qint64 pid);
     // Hand back the time that has passed since the last question, as credit
     // towards looking again. See the definition.
     void accrueLookCredit(std::chrono::steady_clock::time_point now);
@@ -142,23 +150,21 @@ private:
     // Microseconds of walking this object is still entitled to, and when that
     // was last worked out.
     qint64 m_credit = 0;
+    qint64 m_walks = 0;
     std::chrono::steady_clock::time_point m_creditAt{};
     // (proto << 16) | port  ->  pid. Ports are unique per protocol on a host,
     // which is what makes this key enough.
-    QHash<std::uint32_t, qint64> m_owners;
-    // pid -> the program behind it, and empty when the system refused to say.
-    // Kept ACROSS walks, unlike the table above, because asking is the single
-    // largest cost of a walk — one call per process, of which there are
-    // hundreds — and the answer cannot change: a process that execs a different
-    // binary has become a different process.
     //
-    // What can change is which process a pid refers to. See
-    // carryIdentitiesForward().
-    QHash<qint64, AppIdentity> m_identities;
-    // The highest pid ever seen for the first time. A pid BELOW this that turns
-    // up new is the kernel having wrapped its counter, which is the one event
-    // that makes the map above untrustworthy.
-    qint64 m_pidWatermark = 0;
+    // A value of kUnattributed means the walk SAW this port and established
+    // that no watched program owns it. That is not the same as the port being
+    // absent, and the difference is what stops the machine from being walked
+    // once per connection: absent means the table is older than the socket and
+    // must be rebuilt, while present-and-unattributed is a final answer for
+    // every connection whose socket already existed when the walk ran. Without
+    // it, a page's worth of connections from programs nobody wrote a rule about
+    // would each force their own walk, and the walks that matter would be the
+    // ones left without budget.
+    QHash<std::uint32_t, qint64> m_owners;
     ScanReport m_report;
 
     // How long a table that DOES contain the flow is trusted without looking

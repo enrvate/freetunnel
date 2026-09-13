@@ -55,6 +55,8 @@ private slots:
     void aSocketOpenedAfterTheLastWalkIsStillFound();
     void addingAProgramToTheRulesTakesEffectAtOnce();
     void withNoRulesNothingIsWalkedAtAll();
+    void connectionsFromUnnamedProgramsDoNotEachBuyAWalk();
+    void aBurstFromTheWatchedProgramSharesOneWalk();
 };
 
 // The whole chain, on the real operating system: a socket exists, therefore the
@@ -215,32 +217,110 @@ void TestProcessLookup::theScanReportsWhatItSaw()
     // entries and distinctPids above already cover what it does do.
 #ifndef Q_OS_WIN
     QVERIFY2(r.pidsScanned > 1, "the walk looked at more than one process");
-    // The pair that answers "my rule does nothing": many scanned and none
-    // watched means the walk works and no running program matches the rule.
-    QVERIFY2(r.pidsWatched >= 1, "and one of them was the program the rule names");
-    QVERIFY2(r.socketsSeen > 0, "whose descriptors were then read");
+    QVERIFY2(r.socketsSeen > 0, "and read descriptors while doing it");
     QCOMPARE(r.euid, static_cast<int>(::geteuid()));
+#endif
+    // Only Linux decides which processes to open, so only there is there
+    // anything to count: the pair "hundreds scanned, none watched" is what
+    // distinguishes a walk that cannot see other processes from a rule that
+    // names nothing running.
+#ifdef Q_OS_LINUX
+    QVERIFY2(r.pidsWatched >= 1, "one of them was the program the rule names");
 #endif
 
     // Per walk, not since the beginning. These used to accumulate, which was
     // survivable while the table was rebuilt twice a minute and is not now that
     // a walk can happen on any connection: the line a person is asked to paste
     // would grow without bound and mean nothing.
+    //
+    // The walks are forced by asking about sockets that did not exist when the
+    // last one ran, which is what a connection is. Calling invalidate() would
+    // not do: it zeroes the report itself, so the counters would look fresh
+    // however the walk behaved.
     const int firstScan = r.pidsScanned;
+    QList<QTcpServer *> later;
     for (int i = 0; i < 3; ++i) {
-        lookup.invalidate();
-        lookup.setWatchList(watchSelf());
-        // And the answer survives the rebuild. This is the path where the
-        // program behind a pid comes from what the last walk recorded rather
-        // than from the system, so a carry-over that dropped or mangled it
-        // would show up here and nowhere else.
-        QVERIFY(!lookup.resolve(LocalFlow{AF_INET, IPPROTO_TCP, server.serverPort(), QString()})
+        auto *fresh = new QTcpServer;
+        QVERIFY(fresh->listen(QHostAddress::LocalHost, 0));
+        later.append(fresh);
+        QVERIFY(!lookup.resolve(LocalFlow{AF_INET, IPPROTO_TCP, fresh->serverPort(), QString()})
                          .executablePath.isEmpty());
     }
+    qDeleteAll(later);
     QVERIFY2(lookup.lastScan().pidsScanned < firstScan * 2 + 2,
              qPrintable(QStringLiteral("counters accumulated: %1 then %2")
                                 .arg(firstScan)
                                 .arg(lookup.lastScan().pidsScanned)));
+}
+
+// A page's worth of connections from programs nobody named must not each buy a
+// walk of the machine. They are the overwhelming majority of what the handler
+// sees, and if every one of them rebuilt the table there would be no budget
+// left for the connections a rule is actually about — the intermittent failure
+// this all exists to remove, returning as "it depends what else was busy".
+//
+// What makes them cheap is that the walk records the ports it saw and could not
+// attribute, so "not one of yours" is an answer rather than a gap.
+void TestProcessLookup::connectionsFromUnnamedProgramsDoNotEachBuyAWalk()
+{
+    ProcessLookup lookup;
+    // Nothing on the list is running, so every socket below belongs to a program
+    // the rules do not name — which is what every other program on a real
+    // machine looks like from here.
+    lookup.setWatchList({QStringLiteral("a-program-that-is-not-running")});
+
+    QList<QTcpServer *> sockets;
+    for (int i = 0; i < 40; ++i) {
+        auto *s = new QTcpServer;
+        QVERIFY(s->listen(QHostAddress::LocalHost, 0));
+        sockets.append(s);
+    }
+
+    // One question to build a table that has seen all of them.
+    lookup.resolve(LocalFlow{AF_INET, IPPROTO_TCP, sockets.first()->serverPort(), QString()});
+    QVERIFY(lookup.lastScan().ok);
+    const qint64 before = lookup.walksTaken();
+
+    for (QTcpServer *s : sockets) {
+        QVERIFY2(lookup.resolve(LocalFlow{AF_INET, IPPROTO_TCP, s->serverPort(), QString()})
+                         .executablePath.isEmpty(),
+                 "no rule names this program, so it must not be attributed");
+    }
+    const qint64 walks = lookup.walksTaken() - before;
+    qDeleteAll(sockets);
+
+    QVERIFY2(walks <= 1,
+             qPrintable(QStringLiteral("%1 connections from unnamed programs cost %2 walks")
+                                .arg(40)
+                                .arg(walks)));
+}
+
+// The same property from the other side: connections the rules DO name, made
+// before the walk, are answered by that one walk rather than each forcing
+// another. This is what makes a page load affordable.
+void TestProcessLookup::aBurstFromTheWatchedProgramSharesOneWalk()
+{
+    ProcessLookup lookup;
+    lookup.setWatchList(watchSelf());
+
+    QList<QTcpServer *> sockets;
+    for (int i = 0; i < 20; ++i) {
+        auto *s = new QTcpServer;
+        QVERIFY(s->listen(QHostAddress::LocalHost, 0));
+        sockets.append(s);
+    }
+
+    lookup.resolve(LocalFlow{AF_INET, IPPROTO_TCP, sockets.first()->serverPort(), QString()});
+    const qint64 before = lookup.walksTaken();
+    for (QTcpServer *s : sockets) {
+        QVERIFY(!lookup.resolve(LocalFlow{AF_INET, IPPROTO_TCP, s->serverPort(), QString()})
+                         .executablePath.isEmpty());
+    }
+    const qint64 walks = lookup.walksTaken() - before;
+    qDeleteAll(sockets);
+
+    QVERIFY2(walks <= 1,
+             qPrintable(QStringLiteral("20 connections already open cost %1 walks").arg(walks)));
 }
 
 // The reason the rest of this exists. A table is a snapshot, and a connection is

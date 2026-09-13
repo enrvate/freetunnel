@@ -166,7 +166,7 @@ AppIdentity identityForPid(qint64 pid)
         return {};
     AppIdentity id;
     id.executablePath = QDir::toNativeSeparators(path);
-    const int slash = id.executablePath.lastIndexOf(QDir::separator());
+    const qsizetype slash = id.executablePath.lastIndexOf(QDir::separator());
     id.name = slash >= 0 ? id.executablePath.mid(slash + 1) : id.executablePath;
     return id;
 }
@@ -207,14 +207,11 @@ void ProcessLookup::refreshIfStale()
     if (m_everBuilt && now - m_builtAt < currentTtl())
         return;
     m_owners.clear();
-    // m_identities is NOT cleared here: each platform's walk decides what of it
-    // survives, because only the platforms that enumerate processes have the
-    // evidence to decide. See carryIdentitiesForward().
-    //
     // Counters are per walk. They used to accumulate, which was invisible while
     // the table was rebuilt twice a minute and would be nonsense now.
     const ScanReport fresh;
     m_report = fresh;
+    ++m_walks;
     walk(now);
     m_credit -= m_report.elapsedUs;
 }
@@ -251,8 +248,10 @@ void ProcessLookup::finishScan(std::chrono::steady_clock::time_point startedAt, 
 #endif
     m_report.entries = static_cast<int>(m_owners.size());
     QSet<qint64> pids;
-    for (const qint64 pid : m_owners)
-        pids.insert(pid);
+    for (const qint64 pid : m_owners) {
+        if (pid != kUnattributed)
+            pids.insert(pid);
+    }
     m_report.distinctPids = static_cast<int>(pids.size());
     m_report.elapsedUs =
             std::chrono::duration_cast<std::chrono::microseconds>(done - startedAt).count();
@@ -267,10 +266,6 @@ void ProcessLookup::invalidate()
 {
     m_everBuilt = false;
     m_owners.clear();
-    // m_identities survives. It says which program a pid is, which no reconnect
-    // and no change of rules can alter, and the next walk validates it against
-    // the pids that exist then — see carryIdentitiesForward(). Dropping it here
-    // would make every rule edit cost a full re-identification of the machine.
     m_report = {};
 }
 
@@ -301,20 +296,20 @@ void collectWindowsTable(QHash<std::uint32_t, qint64> *owners, ULONG af, int pro
 
 void ProcessLookup::walk(std::chrono::steady_clock::time_point now)
 {
-    // Windows never enumerates processes — the IP helper API hands over a
-    // finished table naming the owning pid of every port — so there is no
-    // listing to tell a pid that has been present all along from one that has
-    // been reissued. Without that evidence the pid -> program map cannot be
-    // carried over, and is emptied instead. Refilling it costs two calls per
-    // connection, and only for the connections that turn out to be
-    // attributable at all.
-    m_identities.clear();
-    m_pidWatermark = 0;
-
+    // Windows never enumerates processes: the IP helper API hands over a
+    // finished table naming the owning pid of every port on the machine. So
+    // every port is attributed here, and which of them a rule names is decided
+    // in resolve(), for the one port being asked about rather than for the
+    // hundreds that were not.
     collectWindowsTable<MIB_TCPTABLE_OWNER_PID>(&m_owners, AF_INET, IPPROTO_TCP, true,
             [](const MIB_TCPTABLE_OWNER_PID *t, QHash<std::uint32_t, qint64> *owners, int proto) {
                 for (DWORD i = 0; i < t->dwNumEntries; ++i) {
                     const auto &row = t->table[i];
+                    // A row the system attributes to nobody — a connection in
+                    // TIME_WAIT is reported that way — can never name a program,
+                    // and recording it would displace a row that can.
+                    if (row.dwOwningPid == 0)
+                        continue;
                     owners->insert(ownerKey(proto, ntohs(static_cast<u_short>(row.dwLocalPort))),
                             static_cast<qint64>(row.dwOwningPid));
                 }
@@ -323,6 +318,11 @@ void ProcessLookup::walk(std::chrono::steady_clock::time_point now)
             [](const MIB_TCP6TABLE_OWNER_PID *t, QHash<std::uint32_t, qint64> *owners, int proto) {
                 for (DWORD i = 0; i < t->dwNumEntries; ++i) {
                     const auto &row = t->table[i];
+                    // A row the system attributes to nobody — a connection in
+                    // TIME_WAIT is reported that way — can never name a program,
+                    // and recording it would displace a row that can.
+                    if (row.dwOwningPid == 0)
+                        continue;
                     owners->insert(ownerKey(proto, ntohs(static_cast<u_short>(row.dwLocalPort))),
                             static_cast<qint64>(row.dwOwningPid));
                 }
@@ -331,6 +331,11 @@ void ProcessLookup::walk(std::chrono::steady_clock::time_point now)
             [](const MIB_UDPTABLE_OWNER_PID *t, QHash<std::uint32_t, qint64> *owners, int proto) {
                 for (DWORD i = 0; i < t->dwNumEntries; ++i) {
                     const auto &row = t->table[i];
+                    // A row the system attributes to nobody — a connection in
+                    // TIME_WAIT is reported that way — can never name a program,
+                    // and recording it would displace a row that can.
+                    if (row.dwOwningPid == 0)
+                        continue;
                     owners->insert(ownerKey(proto, ntohs(static_cast<u_short>(row.dwLocalPort))),
                             static_cast<qint64>(row.dwOwningPid));
                 }
@@ -339,6 +344,11 @@ void ProcessLookup::walk(std::chrono::steady_clock::time_point now)
             [](const MIB_UDP6TABLE_OWNER_PID *t, QHash<std::uint32_t, qint64> *owners, int proto) {
                 for (DWORD i = 0; i < t->dwNumEntries; ++i) {
                     const auto &row = t->table[i];
+                    // A row the system attributes to nobody — a connection in
+                    // TIME_WAIT is reported that way — can never name a program,
+                    // and recording it would displace a row that can.
+                    if (row.dwOwningPid == 0)
+                        continue;
                     owners->insert(ownerKey(proto, ntohs(static_cast<u_short>(row.dwLocalPort))),
                             static_cast<qint64>(row.dwOwningPid));
                 }
@@ -351,12 +361,18 @@ void ProcessLookup::walk(std::chrono::steady_clock::time_point now)
 
 void ProcessLookup::walk(std::chrono::steady_clock::time_point now)
 {
-    // macOS has no socket table to read; the ports have to be gathered from
-    // each process's own file descriptors. Listing those descriptors is the
-    // expensive part — a browser holds hundreds, and the call copies out every
-    // one of them, sockets and files alike — so it is asked only of the
-    // processes a rule actually names. Everything else costs one call to learn
-    // its executable and is then left alone.
+    // macOS has no socket table to read; the ports have to be gathered from each
+    // process's own file descriptors, and every process is read rather than only
+    // the ones a rule names.
+    //
+    // That is deliberate, and it is the cheaper of the two here. Reading only
+    // the named processes would mean asking every process for its executable
+    // first, which on this platform costs about what reading its descriptors
+    // costs — and it would leave the walk knowing nothing about the ports it
+    // skipped. Those ports are the answer to most connections: a table that can
+    // say "this port is open and belongs to nobody you named" settles them
+    // outright, while a table that omits them makes each one look like a table
+    // too old to trust and buy another walk.
     int count = ::proc_listpids(PROC_ALL_PIDS, 0, nullptr, 0);
     if (count <= 0) {
         // Not cached: m_everBuilt stays false so the next connection tries
@@ -374,30 +390,17 @@ void ProcessLookup::walk(std::chrono::steady_clock::time_point now)
         return;
     }
     const int nPids = count / static_cast<int>(sizeof(pid_t));
-    const auto *raw = reinterpret_cast<const pid_t *>(pidBuf.constData());
-    QList<qint64> pids;
-    pids.reserve(nPids);
-    for (int i = 0; i < nPids; ++i) {
-        if (raw[i] > 0)
-            pids.append(static_cast<qint64>(raw[i]));
-    }
-    carryIdentitiesForward(pids);
+    const auto *pids = reinterpret_cast<const pid_t *>(pidBuf.constData());
 
-    for (const qint64 pid64 : pids) {
-        const pid_t pid = static_cast<pid_t>(pid64);
+    for (int i = 0; i < nPids; ++i) {
+        const pid_t pid = pids[i];
+        if (pid <= 0)
+            continue;
         ++m_report.pidsScanned;
-        const AppIdentity id = identityFor(pid64);
-        if (id.executablePath.isEmpty()) {
-            // As root this should essentially never fire for a live process, so
-            // a large count here is itself the answer to why nothing matches.
-            ++m_report.pidsSkipped;
-            continue;
-        }
-        if (!appMatchesRules(id, m_watch))
-            continue;
-        ++m_report.pidsWatched;
         int bufSize = ::proc_pidinfo(pid, PROC_PIDLISTFDS, 0, nullptr, 0);
         if (bufSize <= 0) {
+            // As root this should essentially never fire for a live process, so
+            // a large count here is itself the answer to why nothing matches.
             ++m_report.pidsSkipped;
             m_report.lastErrno = errno;
             continue;
@@ -452,7 +455,7 @@ void ProcessLookup::walk(std::chrono::steady_clock::time_point now)
             // process enumeration order.
             const std::uint32_t key = ownerKey(proto, port);
             if (!m_owners.contains(key))
-                m_owners.insert(key, pid64);
+                m_owners.insert(key, static_cast<qint64>(pid));
         }
     }
 
@@ -558,12 +561,21 @@ void ProcessLookup::walk(std::chrono::steady_clock::time_point now)
     };
 
     const QList<qint64> pids = listProcessIds();
-    carryIdentitiesForward(pids);
+    if (pids.isEmpty()) {
+        // /proc is always readable on a running Linux system, so this is the
+        // walk having failed rather than the machine having no processes. Said
+        // so explicitly: with the tables still recording every port it saw, a
+        // silent empty listing would mark the whole machine unattributed and
+        // report a healthy scan while no rule could ever match.
+        m_report.lastErrno = errno;
+        finishScan(now, false);
+        return;
+    }
 
     QHash<std::uint64_t, qint64> byInode;
     for (const qint64 pid : pids) {
         ++m_report.pidsScanned;
-        const AppIdentity id = identityFor(pid);
+        const AppIdentity id = identityForPid(pid);
         if (id.executablePath.isEmpty()) {
             // A process that exited between the listing and this line, or one
             // this user is not allowed to look at. Both are ordinary; a count in
@@ -577,8 +589,10 @@ void ProcessLookup::walk(std::chrono::steady_clock::time_point now)
         collectSocketInodes(pid, &byInode, &m_report);
     }
 
-    // The tables, and only if they can matter: with no watched program running
-    // there is nothing to map the inodes onto.
+    // The tables are read whether or not anything was watched, and every row is
+    // recorded whether or not it belongs to a watched program. The rows that do
+    // not are the point: they are what lets a connection from some other program
+    // be answered outright instead of buying a walk of its own.
     //
     // This is the expensive part of a Linux walk by a wide margin — the kernel
     // formats every socket on the machine as text — and it is read in full every
@@ -593,19 +607,27 @@ void ProcessLookup::walk(std::chrono::steady_clock::time_point now)
     // a walk happened to look, and misroute it for as long as it lasted — the
     // intermittent failure this whole change exists to remove, reintroduced by
     // the optimisation meant to pay for it.
-    if (!byInode.isEmpty()) {
-        QByteArray buffer(256 * 1024, Qt::Uninitialized);
-        for (const Table &t : kTables) {
-            const QList<SocketOwner> sockets = parseProcNetTable(readWholeFile(t.path, &buffer), t.proto);
-            for (const SocketOwner &sock : sockets) {
-                const auto it = byInode.constFind(sock.inode);
-                if (it == byInode.constEnd())
-                    continue;
-                // First one wins, for the same reason as the macOS walk above.
-                const std::uint32_t key = ownerKey(sock.proto, sock.port);
+    QByteArray buffer(256 * 1024, Qt::Uninitialized);
+    for (const Table &t : kTables) {
+        const QList<SocketOwner> sockets = parseProcNetTable(readWholeFile(t.path, &buffer), t.proto);
+        for (const SocketOwner &sock : sockets) {
+            const std::uint32_t key = ownerKey(sock.proto, sock.port);
+            const auto owner = byInode.constFind(sock.inode);
+            if (owner == byInode.constEnd()) {
+                // Seen, and nobody watched holds it. Recorded only if no watched
+                // process has claimed this port already: one port can carry two
+                // sockets — a listener and a connection accepted on it — and the
+                // program that was asked about must win over the one that
+                // was not.
                 if (!m_owners.contains(key))
-                    m_owners.insert(key, it.value());
+                    m_owners.insert(key, kUnattributed);
+                continue;
             }
+            // First one wins among watched owners, for the same reason as the
+            // macOS walk above; an unattributed marker is overwritten.
+            const auto claimed = m_owners.constFind(key);
+            if (claimed == m_owners.constEnd() || claimed.value() == kUnattributed)
+                m_owners.insert(key, owner.value());
         }
     }
 
@@ -613,69 +635,6 @@ void ProcessLookup::walk(std::chrono::steady_clock::time_point now)
 }
 
 #endif
-
-// Which of the previous walk's answers may be reused.
-//
-// A pid is not a durable name for a program. The kernel issues pids in order
-// and eventually wraps, and after a wrap the same number is a different process
-// — so a carried-over entry would name the wrong binary, and here that means
-// routing one program's traffic by another program's rule.
-//
-// Two facts make the carry-over safe without asking the system anything extra.
-// A pid that has been present in every listing since it was recorded cannot
-// have been reissued, because being reissued requires having gone away first;
-// so an entry is dropped the moment its pid is absent. And a wrap announces
-// itself: pids climb, so a pid appearing for the FIRST time below the highest
-// one ever issued means the counter has come round again, and the whole map is
-// dropped. Both are read off the listing the walk had to make anyway — no extra
-// call, and nothing here depends on how much time has passed.
-void ProcessLookup::carryIdentitiesForward(const QList<qint64> &pids)
-{
-    qint64 highestNew = 0;
-    bool wrapped = false;
-    for (const qint64 pid : pids) {
-        if (m_identities.contains(pid))
-            continue;
-        highestNew = std::max(highestNew, pid);
-        if (pid < m_pidWatermark)
-            wrapped = true;
-    }
-
-    if (wrapped) {
-        m_identities.clear();
-        // Reset to where the counter evidently is now, not to the highest pid
-        // alive: long-running processes keep their high numbers from before the
-        // wrap, and taking the maximum of those would report a wrap on every
-        // walk from here on and disable the map for good.
-        m_pidWatermark = highestNew;
-        return;
-    }
-
-    const QSet<qint64> live(pids.constBegin(), pids.constEnd());
-    for (auto it = m_identities.begin(); it != m_identities.end();) {
-        if (live.contains(it.key()))
-            ++it;
-        else
-            it = m_identities.erase(it);
-    }
-    m_pidWatermark = std::max(m_pidWatermark, highestNew);
-}
-
-AppIdentity ProcessLookup::identityFor(qint64 pid)
-{
-    const auto cached = m_identities.constFind(pid);
-    if (cached != m_identities.constEnd())
-        return cached.value();
-    errno = 0;
-    const AppIdentity id = identityForPid(pid);
-    // Only when the system was actually asked. Reporting whatever errno happened
-    // to hold after a cache hit would put a number in the diagnostic line that
-    // belongs to some unrelated call, which is worse than no number at all.
-    if (id.executablePath.isEmpty())
-        m_report.lastErrno = errno;
-    m_identities.insert(pid, id);
-    return id;
-}
 
 void ProcessLookup::accrueLookCredit(std::chrono::steady_clock::time_point now)
 {
@@ -739,18 +698,22 @@ AppIdentity ProcessLookup::resolve(const LocalFlow &flow)
     if (owner == m_owners.constEnd())
         return {};
 
-    // On Windows this is where the program gets named at all: its tables say
-    // which process owns a port but not what that process is, so the answer is
-    // looked up for the one pid that turned out to matter rather than for the
-    // hundreds that did not. Elsewhere the walk had to ask already, in order to
-    // decide whether to open the process, and this reads back what it recorded.
     const qint64 pid = owner.value();
-    const AppIdentity id = identityFor(pid);
-    // And the filter, once, for everyone. On the platforms that walk processes
-    // this can only agree with what the walk already decided; on Windows, which
-    // is handed every port on the machine whether we asked or not, this IS the
-    // filter — applied to the one flow being asked about rather than to the
-    // hundreds of processes that were never the question.
+    // The walk saw this port and established that nobody named holds it. That is
+    // an answer, not a gap, and it is the answer to most connections.
+    if (pid == kUnattributed)
+        return {};
+
+    // Asked now, not remembered. A pid is only the number of a process, and
+    // exec() keeps the number while replacing the program behind it — so a
+    // remembered answer would name the wrong program for the whole life of
+    // anything started through a wrapper that execs, in either direction: a
+    // rule that silently never applies, or one program's traffic routed by
+    // another program's rule. It is one system call.
+    const AppIdentity id = identityForPid(pid);
+    // And the filter, once, for everyone. Where the walk reads every process it
+    // is this that decides; where the walk already skipped what no rule names,
+    // this can only agree with it.
     return appMatchesRules(id, m_watch) ? id : AppIdentity{};
 }
 

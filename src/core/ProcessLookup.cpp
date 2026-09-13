@@ -554,11 +554,24 @@ int dumpOneFamily(int fd, const SocketTable &table, std::uint32_t seq, QByteArra
             return errno != 0 ? errno : EIO;
         if (got > buffer->size())
             return EMSGSIZE;
-        // int, deliberately: NLMSG_NEXT subtracts from this, and an unsigned
-        // length would wrap instead of ending the loop.
-        auto length = static_cast<int>(got);
-        for (auto *header = reinterpret_cast<nlmsghdr *>(buffer->data()); NLMSG_OK(header, length);
-             header = NLMSG_NEXT(header, length)) {
+        // Walked by hand rather than with NLMSG_OK/NLMSG_NEXT. Those macros
+        // compare the kernel's unsigned length against the caller's, which the
+        // client build rejects outright (-Wsign-compare -Werror), and the
+        // obvious way round it — an unsigned counter — is worse than a warning:
+        // NLMSG_ALIGN can round a message up past what is left, and the
+        // subtraction would then wrap to an enormous value and walk off the end
+        // of the buffer. Both bounds are checked here instead.
+        char *cursor = buffer->data();
+        ssize_t remaining = got;
+        while (remaining >= static_cast<ssize_t>(sizeof(nlmsghdr))) {
+            auto *header = reinterpret_cast<nlmsghdr *>(cursor);
+            const ssize_t declared = static_cast<ssize_t>(header->nlmsg_len);
+            if (declared < static_cast<ssize_t>(sizeof(nlmsghdr)) || declared > remaining)
+                break;
+            const ssize_t step = static_cast<ssize_t>(NLMSG_ALIGN(header->nlmsg_len));
+            cursor += step;
+            remaining = step > remaining ? 0 : remaining - step;
+
             // A dump abandoned earlier would leave its remaining messages in the
             // socket; they are recognised by the sequence number and dropped.
             if (header->nlmsg_seq != seq)

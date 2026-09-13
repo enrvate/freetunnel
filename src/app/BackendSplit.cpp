@@ -5,8 +5,13 @@
 #include "core/AppShortcut.h"
 #include "core/InstalledApps.h"
 
+#include <QCoreApplication>
+#include <QDir>
+#include <QFileInfo>
 #include <QHostAddress>
+#include <QPointer>
 #include <QRegularExpression>
+#include <QThreadPool>
 
 #include "core/AppSettings.h"
 #include "core/BypassRules.h"
@@ -138,6 +143,99 @@ QVariantList Backend::installedApplications() {
         }
     }
     return m_installedApps;
+}
+
+void Backend::startInstalledAppsScan() {
+    if (m_installedAppsScanned || m_installedAppsScanning) return;
+    m_installedAppsScanning = true;
+    QPointer<Backend> self(this);
+    QThreadPool::globalInstance()->start([self]() {
+        QVariantList rows;
+        for (const freetunnel::InstalledApp &app : freetunnel::installedApplications()) {
+            QVariantMap row;
+            row[QStringLiteral("name")] = app.name;
+            row[QStringLiteral("path")] = app.executablePath;
+            rows.append(row);
+        }
+        // Back to the thread that owns the cache. Everything that reads or
+        // writes m_installedApps happens there, which is what makes the absence
+        // of a lock correct rather than lucky.
+        //
+        // Posted to the application, not to the Backend: testing a QPointer from
+        // this thread and then handing the result to invokeMethod is a race with
+        // the Backend being destroyed in between. The application outlives it,
+        // and by the time the lambda runs it is on the thread where checking the
+        // pointer means something.
+        QMetaObject::invokeMethod(
+                qApp,
+                [self, rows]() {
+                    if (self) self->adoptInstalledApps(rows);
+                },
+                Qt::QueuedConnection);
+    });
+}
+
+void Backend::adoptInstalledApps(const QVariantList &apps) {
+    m_installedAppsScanning = false;
+    // Discarded if the picker has already scanned synchronously in the
+    // meantime: that answer is no older than this one and is already in use.
+    if (m_installedAppsScanned) return;
+    m_installedApps = apps;
+    m_installedAppsScanned = true;
+    // The labels on the Split page are derived from this list, and until it
+    // arrived they were showing the file name instead.
+    emit splitChanged();
+}
+
+// What to call a rule when the list of installed applications has nothing to say
+// about it — a program added by dropping its icon, or one uninstalled since.
+static QString labelFromPath(const QString &rule) {
+    // Inside a bundle, the bundle is the application: the executable is often
+    // named something else entirely, and the bundle's own name is what both
+    // Finder and our picker show.
+    const QString bundle = freetunnel::appBundleOf(rule);
+    if (!bundle.isEmpty())
+        return QFileInfo(bundle).completeBaseName();
+    const QString name = QFileInfo(QDir::fromNativeSeparators(rule)).fileName();
+    return name.isEmpty() ? rule : name;
+}
+
+QStringList Backend::appRuleLabels() {
+    startInstalledAppsScan();
+    const Qt::CaseSensitivity cs = freetunnel::appPathCaseSensitivity();
+    QStringList labels;
+    labels.reserve(m_settings.app_rules.size());
+    for (const QString &rule : std::as_const(m_settings.app_rules)) {
+        QString label;
+        for (const QVariant &entry : std::as_const(m_installedApps)) {
+            const QVariantMap row = entry.toMap();
+            if (row.value(QStringLiteral("path")).toString().compare(rule, cs) == 0) {
+                label = row.value(QStringLiteral("name")).toString();
+                break;
+            }
+        }
+        labels << (label.isEmpty() ? labelFromPath(rule) : label);
+    }
+    return labels;
+}
+
+QVariantList Backend::matchingApplications(const QString &query, int limit) {
+    startInstalledAppsScan();
+    const QString needle = query.trimmed();
+    if (needle.isEmpty() || limit <= 0) return {};
+    QVariantList out;
+    for (const QVariant &entry : std::as_const(m_installedApps)) {
+        const QVariantMap row = entry.toMap();
+        // The path as well as the name: someone who knows they want the copy in
+        // /opt can say so, and it is the only way to tell two copies of one
+        // program apart.
+        if (!row.value(QStringLiteral("name")).toString().contains(needle, Qt::CaseInsensitive)
+            && !row.value(QStringLiteral("path")).toString().contains(needle, Qt::CaseInsensitive))
+            continue;
+        out.append(row);
+        if (out.size() >= limit) break;
+    }
+    return out;
 }
 
 bool Backend::addApplicationFromPath(const QString &pathOrUrl) {

@@ -56,6 +56,16 @@ class Backend : public QObject {
     Q_PROPERTY(QStringList domains READ domains NOTIFY splitChanged)
     Q_PROPERTY(QStringList excludedRoutes READ excludedRoutes NOTIFY splitChanged)
     Q_PROPERTY(QStringList appRules READ appRules NOTIFY splitChanged)
+    // The same names the picker shows, one per rule and in the same order, so a
+    // chip reads as what the person chose rather than as whatever the file on
+    // disk happens to be called. A rule stores a path — /usr/lib/firefox/firefox
+    // — and the file name of that path is "firefox" where the list says "Firefox
+    // Web Browser".
+    //
+    // NOTIFY splitChanged rather than a signal of its own: the labels change
+    // when the rules change, and once more when the scan of installed
+    // applications finishes, which emits splitChanged for exactly that reason.
+    Q_PROPERTY(QStringList appRuleLabels READ appRuleLabels NOTIFY splitChanged)
     Q_PROPERTY(QStringList profiles READ profiles NOTIFY splitChanged)
     Q_PROPERTY(QString activeProfile READ activeProfile NOTIFY splitChanged)
     // Global hotkeys (portable key sequences, e.g. "Ctrl+Alt+T"; empty = unbound)
@@ -163,6 +173,11 @@ public:
     // changes when something is installed or removed, and on Windows the scan
     // has to resolve every Start Menu shortcut through the shell.
     Q_INVOKABLE QVariantList installedApplications();
+    QStringList appRuleLabels();
+    // Installed applications whose name or path contains `query`, at most
+    // `limit` of them, for completing what someone is typing. Empty while the
+    // scan has not finished, which is why it also starts it.
+    Q_INVOKABLE QVariantList matchingApplications(const QString &query, int limit = 24);
     Q_INVOKABLE void removeAppRule(int index);
     Q_INVOKABLE void clearAppRules();
     Q_INVOKABLE void restoreDefaultExcludedRoutes();
@@ -326,6 +341,13 @@ private:
     // installedApplications() for why this is not a function-local static.
     QVariantList m_installedApps;
     bool m_installedAppsScanned = false;
+    bool m_installedAppsScanning = false;
+    // Start the scan on a worker if it has not run. Reading every Start Menu
+    // shortcut on Windows means resolving each one through the shell, which is
+    // too much to do while a page is drawing; on the other two it is a few
+    // milliseconds and this costs nothing either way.
+    void startInstalledAppsScan();
+    void adoptInstalledApps(const QVariantList &apps);
     QHotkey *m_hkToggle = nullptr;
     QHotkey *m_hkConnect = nullptr;
     QHotkey *m_hkDisconnect = nullptr;

@@ -199,12 +199,15 @@ Item {
                         required property int index
                         radius: 13; color: theme.surface
                         implicitWidth: alabel.width + 39; implicitHeight: 28
-                        // Just the program. A rule may be stored as a long path,
-                        // but the path is not what the person recognises: they
-                        // added Firefox, so the chip says firefox.
+                        // The name the picker showed, not the file on disk. A rule
+                        // is stored as a path, and the file at the end of it is
+                        // called "firefox" where the list says "Firefox Web
+                        // Browser" — the person chose the second one.
                         Text { id: alabel; anchors.left: parent.left; anchors.leftMargin: 11
                                anchors.verticalCenter: parent.verticalCenter
-                               text: apChip.modelData.split(/[\\/]/).pop()
+                               text: apChip.index < backend.appRuleLabels.length
+                                     ? backend.appRuleLabels[apChip.index]
+                                     : apChip.modelData.split(/[\\/]/).pop()
                                width: Math.min(implicitWidth, 190); elide: Text.ElideRight
                                color: theme.text; font.pixelSize: 13 }
                         ChipX { theme: splitRoot.theme; anchors.left: alabel.right; anchors.leftMargin: 5
@@ -216,16 +219,107 @@ Item {
             Rectangle {
                 Layout.fillWidth: true; Layout.preferredHeight: 36; radius: 8
                 Layout.topMargin: 6
+                // Above its neighbours so the suggestions below can be drawn over
+                // what follows on the page instead of between it.
+                z: 5
                 color: apDrop.containsDrag ? theme.surface : theme.inputBg
                 border.width: 1
                 border.color: apDrop.containsDrag || apInput.activeFocus ? theme.accent : theme.inputBorder
+
+                // Typing a name finds the program, the same way the picker does.
+                // A name on its own is not a rule anyone should be asked to spell
+                // — it is only a way of pointing at one of these — so what gets
+                // stored is always the path from the row, never the typed text.
+                //
+                // It opens upward: this is the last thing on the page, and a list
+                // dropping down would be cut off by the edge of the view.
+                Rectangle {
+                    id: apSuggest
+                    objectName: "appSuggestions"
+                    property var rows: []
+                    property int highlighted: 0
+                    function refresh() {
+                        rows = apInput.text.length > 0 ? backend.matchingApplications(apInput.text, 24) : []
+                        highlighted = 0
+                    }
+                    function take(i) {
+                        if (i < 0 || i >= rows.length) return false
+                        backend.addAppRule(rows[i].path)
+                        apInput.text = ""
+                        rows = []
+                        return true
+                    }
+                    visible: apInput.activeFocus && rows.length > 0
+                    anchors.left: parent.left; anchors.right: parent.right
+                    anchors.bottom: parent.top; anchors.bottomMargin: 4
+                    // Three rows visible, and the rest reachable by scrolling.
+                    height: Math.min(3, rows.length) * 42 + 8
+                    radius: 8; color: theme.bg; border.color: theme.border; border.width: 1
+                    ListView {
+                        id: apSuggestList
+                        anchors.fill: parent; anchors.margins: 4
+                        clip: true; model: apSuggest.rows
+                        currentIndex: apSuggest.highlighted
+                        onCurrentIndexChanged: positionViewAtIndex(currentIndex, ListView.Contain)
+                        delegate: Rectangle {
+                            required property var modelData
+                            required property int index
+                            width: apSuggestList.width; height: 42; radius: 6
+                            color: index === apSuggest.highlighted ? theme.surface : "transparent"
+                            Column {
+                                anchors.verticalCenter: parent.verticalCenter
+                                anchors.left: parent.left; anchors.leftMargin: 8
+                                anchors.right: parent.right; anchors.rightMargin: 8
+                                spacing: 1
+                                Text { text: modelData.name; color: theme.text; font.pixelSize: 13
+                                       width: parent.width; elide: Text.ElideRight }
+                                Text { text: modelData.path; color: theme.textFaint; font.pixelSize: 11
+                                       width: parent.width; elide: Text.ElideLeft }
+                            }
+                            MouseArea {
+                                anchors.fill: parent; hoverEnabled: true
+                                cursorShape: Qt.PointingHandCursor
+                                onEntered: apSuggest.highlighted = index
+                                onClicked: apSuggest.take(index)
+                            }
+                        }
+                    }
+                }
+                // The list is rebuilt when the text changes, and once more when
+                // the scan of installed applications finishes — on a machine
+                // where that takes a moment, someone may already be typing.
+                Connections {
+                    target: backend
+                    function onSplitChanged() { apSuggest.refresh() }
+                }
+
                 TextInput {
                     id: apInput
+                    objectName: "appPathInput"
                     anchors.fill: parent; anchors.leftMargin: 12; anchors.rightMargin: 12
                     verticalAlignment: TextInput.AlignVCenter; clip: true
                     font.pixelSize: 13; color: theme.text
-                    onAccepted: { if (backend.addApplicationFromPath(text)) text = "" }
-                    Keys.onEscapePressed: focus = false
+                    onTextChanged: apSuggest.refresh()
+                    // Enter takes the highlighted suggestion when there is one.
+                    // Otherwise it is a path, which is the other way in.
+                    onAccepted: {
+                        if (apSuggest.visible && apSuggest.take(apSuggest.highlighted)) return
+                        if (backend.addApplicationFromPath(text)) text = ""
+                    }
+                    Keys.onDownPressed: function(event) {
+                        if (!apSuggest.visible) { event.accepted = false; return }
+                        apSuggest.highlighted = Math.min(apSuggest.highlighted + 1, apSuggest.rows.length - 1)
+                    }
+                    Keys.onUpPressed: function(event) {
+                        if (!apSuggest.visible) { event.accepted = false; return }
+                        apSuggest.highlighted = Math.max(apSuggest.highlighted - 1, 0)
+                    }
+                    Keys.onEscapePressed: {
+                        // First press puts the suggestions away, second leaves the
+                        // field: closing both at once loses what was typed.
+                        if (apSuggest.visible) apSuggest.rows = []
+                        else focus = false
+                    }
                 }
                 Text { anchors.left: parent.left; anchors.leftMargin: 12; anchors.verticalCenter: parent.verticalCenter
                        anchors.right: parent.right; anchors.rightMargin: 12; elide: Text.ElideRight

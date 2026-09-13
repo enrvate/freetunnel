@@ -26,6 +26,19 @@ using freetunnel::AppIdentity;
 using freetunnel::LocalFlow;
 using freetunnel::ProcessLookup;
 
+namespace {
+
+// The lookup only walks processes a rule names, so every live test here has to
+// say that this test binary is one of them — which is also the arrangement the
+// application uses, rather than a test-only mode.
+QStringList watchSelf()
+{
+    return {QDir::toNativeSeparators(
+            QFileInfo(QCoreApplication::applicationFilePath()).canonicalFilePath())};
+}
+
+} // namespace
+
 class TestProcessLookup : public QObject {
     Q_OBJECT
 
@@ -39,6 +52,9 @@ private slots:
     void ignoresTheHeaderAndAnythingMalformed();
     void anUnknownPidHasNoIdentity();
     void theScanReportsWhatItSaw();
+    void aSocketOpenedAfterTheLastWalkIsStillFound();
+    void addingAProgramToTheRulesTakesEffectAtOnce();
+    void withNoRulesNothingIsWalkedAtAll();
 };
 
 // The whole chain, on the real operating system: a socket exists, therefore the
@@ -51,6 +67,7 @@ void TestProcessLookup::findsTheProcessBehindARealTcpSocket()
     QVERIFY(port != 0);
 
     ProcessLookup lookup;
+    lookup.setWatchList(watchSelf());
     const AppIdentity id = lookup.resolve(LocalFlow{AF_INET, IPPROTO_TCP, port, QStringLiteral("127.0.0.1")});
 
     QVERIFY2(!id.executablePath.isEmpty(),
@@ -70,6 +87,7 @@ void TestProcessLookup::findsTheProcessBehindARealUdpSocket()
     QVERIFY(port != 0);
 
     ProcessLookup lookup;
+    lookup.setWatchList(watchSelf());
     const AppIdentity id = lookup.resolve(LocalFlow{AF_INET, IPPROTO_UDP, port, QStringLiteral("127.0.0.1")});
 
     QVERIFY2(!id.executablePath.isEmpty(), "a bound UDP socket must be attributable too");
@@ -93,6 +111,7 @@ void TestProcessLookup::aPortNobodyHasOpenResolvesToNothing()
     QVERIFY(port != 0);
 
     ProcessLookup lookup;
+    lookup.setWatchList(watchSelf());
     const AppIdentity id = lookup.resolve(LocalFlow{AF_INET, IPPROTO_TCP, port, QStringLiteral("127.0.0.1")});
     QVERIFY2(id.executablePath.isEmpty() && id.name.isEmpty(),
             "a closed port must not be attributed to anyone");
@@ -101,6 +120,7 @@ void TestProcessLookup::aPortNobodyHasOpenResolvesToNothing()
 void TestProcessLookup::portZeroIsNeverLookedUp()
 {
     ProcessLookup lookup;
+    lookup.setWatchList(watchSelf());
     const AppIdentity id = lookup.resolve(LocalFlow{AF_INET, IPPROTO_TCP, 0, QString()});
     QVERIFY(id.executablePath.isEmpty());
 }
@@ -178,31 +198,113 @@ void TestProcessLookup::theScanReportsWhatItSaw()
     QVERIFY(server.listen(QHostAddress::LocalHost, 0));
 
     ProcessLookup lookup;
+    lookup.setWatchList(watchSelf());
     lookup.resolve(LocalFlow{AF_INET, IPPROTO_TCP, server.serverPort(), QString()});
 
     const auto r = lookup.lastScan();
     QVERIFY2(r.ok, "the walk ran");
-    QVERIFY2(r.entries > 0, "this machine has open sockets, so the table cannot be empty");
+    QVERIFY2(r.entries > 0, "this process has a socket open, so the table cannot be empty");
     QVERIFY2(r.distinctPids >= 1, "at least this process owns something");
-    // The number the macOS investigation turns on: one means the scan can only
-    // see itself, which is a different fault from a port that was never listed.
-    QVERIFY2(r.distinctPids > 1,
-             qPrintable(QStringLiteral("only %1 process visible — the scan cannot see others")
-                                .arg(r.distinctPids)));
 
     // The counters have to be filled, not merely declared: a report of zeroes
     // reads as "this machine has nothing" and would send the next person
     // looking in the wrong place entirely.
-    // Windows reads a socket table straight from the IP helper API and never
-    // walks processes at all, so these two counters are meaningless there —
-    // entries and distinct pids above already cover what it does do.
+    //
+    // Windows is handed a finished socket table by the IP helper API and never
+    // walks processes at all, so the two process counters are meaningless there.
+    // entries and distinctPids above already cover what it does do.
 #ifndef Q_OS_WIN
-    QVERIFY2(r.pidsScanned > 1, "the walk visited more than one process");
-    QVERIFY2(r.socketsSeen > 0, "and saw sockets while doing it");
-#endif
-#ifndef Q_OS_WIN
+    QVERIFY2(r.pidsScanned > 1, "the walk looked at more than one process");
+    // The pair that answers "my rule does nothing": many scanned and none
+    // watched means the walk works and no running program matches the rule.
+    QVERIFY2(r.pidsWatched >= 1, "and one of them was the program the rule names");
+    QVERIFY2(r.socketsSeen > 0, "whose descriptors were then read");
     QCOMPARE(r.euid, static_cast<int>(::geteuid()));
 #endif
+
+    // Per walk, not since the beginning. These used to accumulate, which was
+    // survivable while the table was rebuilt twice a minute and is not now that
+    // a walk can happen on any connection: the line a person is asked to paste
+    // would grow without bound and mean nothing.
+    const int firstScan = r.pidsScanned;
+    for (int i = 0; i < 3; ++i) {
+        lookup.invalidate();
+        lookup.setWatchList(watchSelf());
+        // And the answer survives the rebuild. This is the path where the
+        // program behind a pid comes from what the last walk recorded rather
+        // than from the system, so a carry-over that dropped or mangled it
+        // would show up here and nowhere else.
+        QVERIFY(!lookup.resolve(LocalFlow{AF_INET, IPPROTO_TCP, server.serverPort(), QString()})
+                         .executablePath.isEmpty());
+    }
+    QVERIFY2(lookup.lastScan().pidsScanned < firstScan * 2 + 2,
+             qPrintable(QStringLiteral("counters accumulated: %1 then %2")
+                                .arg(firstScan)
+                                .arg(lookup.lastScan().pidsScanned)));
+}
+
+// The reason the rest of this exists. A table is a snapshot, and a connection is
+// by definition made after the last snapshot was taken — so if a miss were
+// answered from the snapshot, whether a rule applied would depend on how long
+// ago some unrelated connection happened to be. That is what a person saw as
+// "it works on some tabs and not others".
+//
+// The operating system binds the port before the packet that carries it exists,
+// so the socket IS there to be found; nothing here has to wait for anything.
+void TestProcessLookup::aSocketOpenedAfterTheLastWalkIsStillFound()
+{
+    ProcessLookup lookup;
+    lookup.setWatchList(watchSelf());
+
+    // A first question, purely so that a table exists and is as fresh as it can
+    // be — this is the worst case for the old behaviour, not the best.
+    QTcpServer first;
+    QVERIFY(first.listen(QHostAddress::LocalHost, 0));
+    lookup.resolve(LocalFlow{AF_INET, IPPROTO_TCP, first.serverPort(), QString()});
+    QVERIFY(lookup.lastScan().ok);
+
+    // Now a socket that table cannot contain, asked about with no wait at all.
+    QTcpServer later;
+    QVERIFY(later.listen(QHostAddress::LocalHost, 0));
+    const AppIdentity id =
+            lookup.resolve(LocalFlow{AF_INET, IPPROTO_TCP, later.serverPort(), QString()});
+    QVERIFY2(!id.executablePath.isEmpty(),
+             "a socket opened after the last walk must still be attributed, immediately");
+}
+
+// A rule added while the tunnel is up applies to the next connection, not the
+// next session. The table only contains the programs it was told to look for,
+// so a list that has changed is a table that never asked about the program the
+// user has just added — and they would be left watching a rule do nothing.
+void TestProcessLookup::addingAProgramToTheRulesTakesEffectAtOnce()
+{
+    QTcpServer server;
+    QVERIFY(server.listen(QHostAddress::LocalHost, 0));
+    const LocalFlow flow{AF_INET, IPPROTO_TCP, server.serverPort(), QString()};
+
+    ProcessLookup lookup;
+    lookup.setWatchList({QStringLiteral("some-program-that-is-not-running")});
+    QVERIFY2(lookup.resolve(flow).executablePath.isEmpty(),
+             "a program no rule names must not be attributed to anyone");
+
+    lookup.setWatchList(watchSelf());
+    QVERIFY2(!lookup.resolve(flow).executablePath.isEmpty(),
+             "and the moment a rule names it, the very next connection sees it");
+}
+
+// Off costs nothing. With no rules there is no program to look for, so the walk
+// — the expensive part, and the only part that touches the rest of the machine
+// — must not happen at all.
+void TestProcessLookup::withNoRulesNothingIsWalkedAtAll()
+{
+    QTcpServer server;
+    QVERIFY(server.listen(QHostAddress::LocalHost, 0));
+
+    ProcessLookup lookup;
+    const AppIdentity id =
+            lookup.resolve(LocalFlow{AF_INET, IPPROTO_TCP, server.serverPort(), QString()});
+    QVERIFY(id.executablePath.isEmpty());
+    QVERIFY2(!lookup.lastScan().ok, "no rules, so nothing was walked");
 }
 
 QTEST_MAIN(TestProcessLookup)

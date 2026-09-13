@@ -104,20 +104,31 @@ QString canonicalOrSelf(const QString &path)
     return canonical.isEmpty() ? path : canonical;
 }
 
+// The one spelling a rule is ever stored in. Every rule is compared against what
+// the kernel reports for a running process, and both /proc/<pid>/exe and
+// proc_pidpath answer with symlinks already resolved — so a rule that still has
+// a symlink in it is a rule that can never match. Every path that leaves this
+// file goes through here, including the one inside a bundle, which did not and
+// therefore stored an unmatchable rule for any application reached through a
+// symlinked directory. macOS puts every temporary directory behind one.
+QString storedRuleForm(const QString &path)
+{
+    return QDir::toNativeSeparators(canonicalOrSelf(path));
+}
+
 QString absoluteExecutable(const QString &program)
 {
     if (program.isEmpty())
         return {};
     if (QFileInfo(program).isAbsolute()) {
-        return QFileInfo(program).exists() ? QDir::toNativeSeparators(canonicalOrSelf(program))
-                                           : QString();
+        return QFileInfo(program).exists() ? storedRuleForm(program) : QString();
     }
     // A bare name in Exec= is resolved against PATH, the same as the launcher
     // would. Falling back to the bare name would store a rule that happens to
     // work — bare names do match — but would lose the precision the user asked
     // for by pointing at a specific shortcut.
     const QString found = QStandardPaths::findExecutable(program);
-    return found.isEmpty() ? QString() : QDir::toNativeSeparators(canonicalOrSelf(found));
+    return found.isEmpty() ? QString() : storedRuleForm(found);
 }
 
 #ifdef Q_OS_WIN
@@ -156,9 +167,24 @@ QString resolveWindowsShortcut(const QString &lnkPath)
     // makes hundreds of these calls.
     if (weInitialised)
         ::CoUninitialize();
-    if (result.isEmpty() || !QFileInfo(result).exists())
+    if (result.isEmpty())
         return {};
-    return QDir::toNativeSeparators(result);
+    // SLGP_RAWPATH hands back what the shortcut stores, and Start Menu entries
+    // written by an installer routinely store %ProgramFiles%\... . Unexpanded,
+    // the existence check below fails and the application simply cannot be
+    // added — from the list or by dropping its shortcut. Expanding is a string
+    // operation; it is the resolve FLAGS that would go hunting over the network.
+    wchar_t expanded[MAX_PATH * 2] = {};
+    const DWORD n = ::ExpandEnvironmentStringsW(reinterpret_cast<LPCWSTR>(result.utf16()), expanded,
+                                                static_cast<DWORD>(std::size(expanded)));
+    if (n > 0 && n <= std::size(expanded))
+        result = QString::fromWCharArray(expanded, static_cast<int>(n) - 1);
+    if (!QFileInfo(result).exists())
+        return {};
+    // Through the same spelling as every other rule: a shortcut can name its
+    // target through a junction or in 8.3 form, and the running process is
+    // reported as neither.
+    return storedRuleForm(result);
 }
 #endif
 
@@ -194,14 +220,14 @@ QString executableInsideBundle(const QString &bundlePath)
     if (!declared.isEmpty()) {
         const QString byPlist = macos.filePath(declared);
         if (QFileInfo(byPlist).isFile())
-            return QDir::toNativeSeparators(byPlist);
+            return storedRuleForm(byPlist);
     }
     const QString byName = macos.filePath(QFileInfo(bundlePath).completeBaseName());
     if (QFileInfo(byName).isFile())
-        return QDir::toNativeSeparators(byName);
+        return storedRuleForm(byName);
     const QStringList entries = macos.entryList(QDir::Files | QDir::NoDotAndDotDot);
     if (entries.size() == 1)
-        return QDir::toNativeSeparators(macos.filePath(entries.first()));
+        return storedRuleForm(macos.filePath(entries.first()));
     return {};
 }
 
@@ -363,7 +389,7 @@ QString resolveApplicationTarget(const QString &pathOrUrl)
     // rather than becoming a rule that silently never matches.
     if (!info.isFile())
         return {};
-    return QDir::toNativeSeparators(canonicalOrSelf(info.absoluteFilePath()));
+    return storedRuleForm(info.absoluteFilePath());
 }
 
 } // namespace freetunnel

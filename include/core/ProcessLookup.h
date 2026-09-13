@@ -5,6 +5,7 @@
 
 #include <QHash>
 #include <QString>
+#include <QStringList>
 
 #include <chrono>
 #include <cstdint>
@@ -39,18 +40,38 @@ QList<SocketOwner> parseProcNetTable(const QString &contents, int proto);
 
 // Resolves connections to the program that opened them.
 //
-// Every platform answers this question by walking a table of all open sockets,
-// which is far too expensive to do per connection: a busy machine has thousands
-// of them, and the answer is needed while a connection is waiting to be set up.
-// So the whole table is built at most once per `ttl` and served from memory in
-// between. A connection that arrives just after a program started may therefore
-// miss; the caller treats a miss as "no rule applies" rather than guessing.
+// The operating system binds a socket's local port before the first packet that
+// carries it can exist, and this is asked only because such a packet arrived.
+// So the socket is always already in the system's tables when the question is
+// put: a lookup that fails to find it has not discovered a race, it has
+// discovered that our copy of those tables is older than the question. That is
+// the whole design here — a miss is never accepted as an answer while a fresher
+// look is affordable, and how fresh the look needs to be is decided by
+// comparing timestamps, not by trusting an interval to have been long enough.
+//
+// Affordable is the other half. Walking every process's descriptors to find one
+// socket is far too expensive to repeat per connection, but it is also far more
+// than the question needs: the decision is "does this belong to a program the
+// user wrote a rule about", and there are usually one or two of those. So only
+// those processes are walked — see setWatchList — which is what turns a fresh
+// look from something to be rationed into something to be taken every time.
 class ProcessLookup {
 public:
     explicit ProcessLookup(std::chrono::milliseconds ttl = std::chrono::milliseconds(1500));
 
+    // The programs whose sockets have to be known, in the same spelling
+    // appMatchesRules() takes. Every other process on the machine is skipped
+    // during the walk: its connections resolve to nothing, which is already
+    // what "no rule applies" looks like to the caller.
+    //
+    // Changing the list throws the table away. It was built to answer a
+    // different question, and a program that has just been added to the rules
+    // would not be in it.
+    void setWatchList(const QStringList &rules);
+
     // The program that owns this flow's local socket, or an empty identity when
-    // it cannot be attributed.
+    // it is not one of the watched ones — or, on the rare occasions the system
+    // will not say, when it cannot be attributed at all.
     AppIdentity resolve(const LocalFlow &flow);
 
     // Drop the cached table. For tests, and for reconnects, where every socket
@@ -66,39 +87,85 @@ public:
     // identical to success, and a report of "no, that line never appeared"
     // would have meant nothing at all.
     //
-    // distinctPids is the number that settles it. One means the scan saw only
-    // this process, and the problem is that it cannot see others. Hundreds means
-    // the table is fine and the misses are elsewhere — a port that was never in
-    // it, or one that arrived after the last walk.
+    // pidsScanned against pidsWatched is what settles a report of "my rule does
+    // nothing". Zero scanned means this process cannot see other processes at
+    // all; hundreds scanned and zero watched means it can, and none of them is
+    // the program the rule names — a rule spelled for a binary the system
+    // reports under another path, which is a different fix entirely.
     struct ScanReport {
         bool ok = false;      // the walk ran to completion
         int euid = -1;        // who we were while walking
         int pidsScanned = 0;
-        int pidsSkipped = 0;  // processes whose descriptors we were refused
-        int socketsSeen = 0;
+        int pidsWatched = 0;  // of those, ones a rule names — 0 answers "my rule
+                              // matches nothing that is running", which is a
+                              // different problem from every other one here
+        int pidsSkipped = 0;  // processes the system would not describe
+        int socketsSeen = 0;  // descriptors examined; 0 on Windows, which hands
+                              // over a finished table instead of being walked
         int entries = 0;      // (protocol, port) -> pid pairs recorded
         int distinctPids = 0;
         int lastErrno = 0;
-        qint64 elapsedMs = 0;
+        // Microseconds, not milliseconds. The walk is expected to land under a
+        // millisecond now that it only visits the processes a rule names, and
+        // the figure is not only displayed: the rebuild budget below is derived
+        // from it, so rounding it to zero would remove the budget entirely.
+        qint64 elapsedUs = 0;
     };
     const ScanReport &lastScan() const { return m_report; }
 
 private:
     void refreshIfStale();
+    // The platform's own walk. Called with the table already emptied and the
+    // report zeroed, and expected to call finishScan() before returning.
+    void walk(std::chrono::steady_clock::time_point startedAt);
+    // Whether to look again for a flow the table does not have. See the note at
+    // the definition: the answer is yes unless the table is already newer than
+    // the question, or unless looking again would spend more of this machine
+    // than the feature is worth.
+    bool shouldLookAgain(std::chrono::steady_clock::time_point asked) const;
+    // Decide how much of the previous walk's pid -> program map survives into
+    // this one, given every pid that exists now. Called by the platforms that
+    // enumerate processes; Windows, which never does, empties the map instead.
+    void carryIdentitiesForward(const QList<qint64> &pids);
+    // The program behind a pid, asking the system only the first time. Records
+    // the refusals too — a process this user may not inspect would otherwise be
+    // asked about on every walk, forever.
+    AppIdentity identityFor(qint64 pid);
+    // Hand back the time that has passed since the last question, as credit
+    // towards looking again. See the definition.
+    void accrueLookCredit(std::chrono::steady_clock::time_point now);
 
     std::chrono::steady_clock::time_point m_builtAt{};
     bool m_everBuilt = false;
     std::chrono::milliseconds m_ttl;
+    QStringList m_watch;
+    // Microseconds of walking this object is still entitled to, and when that
+    // was last worked out.
+    qint64 m_credit = 0;
+    std::chrono::steady_clock::time_point m_creditAt{};
     // (proto << 16) | port  ->  pid. Ports are unique per protocol on a host,
     // which is what makes this key enough.
     QHash<std::uint32_t, qint64> m_owners;
+    // pid -> the program behind it, and empty when the system refused to say.
+    // Kept ACROSS walks, unlike the table above, because asking is the single
+    // largest cost of a walk — one call per process, of which there are
+    // hundreds — and the answer cannot change: a process that execs a different
+    // binary has become a different process.
+    //
+    // What can change is which process a pid refers to. See
+    // carryIdentitiesForward().
     QHash<qint64, AppIdentity> m_identities;
+    // The highest pid ever seen for the first time. A pid BELOW this that turns
+    // up new is the kernel having wrapped its counter, which is the one event
+    // that makes the map above untrustworthy.
+    qint64 m_pidWatermark = 0;
     ScanReport m_report;
 
+    // How long a table that DOES contain the flow is trusted without looking
+    // again. Only a hit can be answered from an old table — see resolve().
+    std::chrono::milliseconds currentTtl() const;
     // Fills the parts of the report every platform can answer, and stamps the
     // table as ready. Called at the end of each platform's walk.
-    // How long the built table is trusted, derived from what building it cost.
-    std::chrono::milliseconds currentTtl() const;
     void finishScan(std::chrono::steady_clock::time_point startedAt, bool ok);
 };
 

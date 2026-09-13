@@ -7,6 +7,26 @@ compare link at the bottom of its release notes.
 
 ## 1.1.10
 
+### Added
+
+- **Split tunnelling by application.** Next to the addresses on the Split
+  tunnelling page you can now name programs, and they follow whichever way round
+  the split is already set: with "all traffic except the listed" they leave the
+  tunnel, with "only the listed" they are the only ones inside it. Add a program
+  from the list of what is installed on the machine, by dragging its icon onto
+  the page, or by picking the file yourself.
+
+  On macOS a rule covers the application rather than one file inside it. A
+  browser does its networking from a separate helper process, so a rule naming
+  the program you actually picked would otherwise never match a single one of
+  its connections.
+
+  Nothing extra has to be installed for this: no driver, no system extension, no
+  permission dialog. Which program a connection belongs to is worked out by
+  asking the operating system who owns the socket it came from, on the
+  connection itself, so a rule added while the VPN is up applies to the next
+  connection rather than the next session.
+
 ### Security
 
 - If you chose **HTTP/3** as the protocol for a config, the server's certificate

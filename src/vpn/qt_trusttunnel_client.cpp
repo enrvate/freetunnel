@@ -426,17 +426,18 @@ namespace {
 // much did it see, and how long did it take.
 QString describeScan(const freetunnel::ProcessLookup::ScanReport &r)
 {
-    return QStringLiteral("app rules: scan %1 — euid %2, pids %3 (%4 refused), sockets %5, "
-                          "entries %6, distinct %7, errno %8, %9 ms")
+    return QStringLiteral("app rules: scan %1 — euid %2, pids %3 (%4 watched, %5 refused), "
+                          "sockets %6, entries %7, distinct %8, errno %9, %10 ms")
             .arg(r.ok ? QStringLiteral("ok") : QStringLiteral("FAILED"))
             .arg(r.euid)
             .arg(r.pidsScanned)
+            .arg(r.pidsWatched)
             .arg(r.pidsSkipped)
             .arg(r.socketsSeen)
             .arg(r.entries)
             .arg(r.distinctPids)
             .arg(r.lastErrno)
-            .arg(r.elapsedMs);
+            .arg(r.elapsedUs / 1000.0, 0, 'f', 2);
 }
 
 } // namespace
@@ -473,6 +474,13 @@ QtTrustTunnelClient::makeConnectRequestHandler(const GuardPtr &guard, quint64 se
         // any of this existed.
         if (rules.isEmpty())
             return;
+
+        // Which programs the walk needs to look at. Pushed on every connection
+        // rather than wired to a change notification: comparing the list is
+        // cheaper than the notification would be to get right, and a rule the
+        // user has just added takes effect on their next connection instead of
+        // on their next session.
+        lookup->setWatchList(rules);
 
         const freetunnel::LocalFlow flow{req.family, req.proto, req.src_port,
                                          QString::fromStdString(req.src_ip)};
@@ -522,9 +530,18 @@ QtTrustTunnelClient::makeConnectRequestHandler(const GuardPtr &guard, quint64 se
         // the machine. Verbose is where that question gets answered.
         if (!routed && !verbose)
             return;
-        const QString who = app.name.isEmpty()
-                ? QStringLiteral("unknown (port %1)").arg(req.src_port)
-                : app.name;
+        // An unnamed flow now means one of two things, and the source endpoint is
+        // what tells them apart in a report: either no rule names the program —
+        // the walk deliberately never opened it, which is the ordinary case and
+        // the reason this line only appears in verbose mode — or a rule does
+        // name it and the walk could not see it, which the scan line above
+        // reports as refusals.
+        const QString src = QString::fromStdString(req.src_ip);
+        const QString where = src.isEmpty()          ? QStringLiteral("port %1").arg(req.src_port)
+                : src.contains(QLatin1Char(':'))     ? QStringLiteral("[%1]:%2").arg(src).arg(req.src_port)
+                                                     : QStringLiteral("%1:%2").arg(src).arg(req.src_port);
+        const QString who =
+                app.name.isEmpty() ? QStringLiteral("unknown (%1)").arg(where) : app.name;
         const QString what = decision->action == ag::VPN_CA_FORCE_BYPASS ? QStringLiteral("bypass")
                 : decision->action == ag::VPN_CA_FORCE_REDIRECT          ? QStringLiteral("tunnel")
                                                                          : QStringLiteral("no rule");

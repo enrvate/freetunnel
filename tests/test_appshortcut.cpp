@@ -43,6 +43,7 @@ private slots:
     void aBundleDraggedFromFinderCarriesATrailingSlash();
     void aBundleDeclaresItsOwnExecutableName();
     void aSymlinkedProgramIsStoredAsWhatTheKernelWillReport();
+    void aBundleReachedThroughASymlinkIsStoredResolved();
 };
 
 void TestAppShortcut::readsTheProgramOutOfADesktopEntry_data()
@@ -331,6 +332,37 @@ void TestAppShortcut::aSymlinkedProgramIsStoredAsWhatTheKernelWillReport()
                     .arg(link).toUtf8());
     f.close();
     QCOMPARE(freetunnel::resolveApplicationTarget(entry), expected);
+#endif
+}
+
+// The same invariant one level up: not a symlinked program, a program inside a
+// bundle reached through a symlinked DIRECTORY. This is not exotic — every
+// temporary directory on macOS is under /var, which is a symlink to /private/var
+// — and the bundle branch was the one place that skipped resolution, so a rule
+// added there was stored spelled a way the kernel never uses. It matched nothing
+// and there was no way to tell from looking at it.
+void TestAppShortcut::aBundleReachedThroughASymlinkIsStoredResolved()
+{
+#ifdef Q_OS_WIN
+    QSKIP("QFile::link writes a .lnk shortcut here, which is a different mechanism");
+#else
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString realDir = dir.filePath(QStringLiteral("real"));
+    QVERIFY(QDir().mkpath(realDir));
+    const QString bundle = realDir + QStringLiteral("/Some App.app");
+    QVERIFY(QDir().mkpath(bundle + QStringLiteral("/Contents/MacOS")));
+    QFile bin(bundle + QStringLiteral("/Contents/MacOS/Some App"));
+    QVERIFY(bin.open(QIODevice::WriteOnly));
+    bin.close();
+
+    const QString linkedDir = dir.filePath(QStringLiteral("linked"));
+    if (!QFile::link(realDir, linkedDir))
+        QSKIP("this filesystem does not support symlinks");
+
+    // Dropped by its symlinked path, stored by its real one.
+    QCOMPARE(freetunnel::resolveApplicationTarget(linkedDir + QStringLiteral("/Some App.app")),
+             expectedRule(bundle + QStringLiteral("/Contents/MacOS/Some App")));
 #endif
 }
 

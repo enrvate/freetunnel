@@ -98,12 +98,22 @@ struct VpnTunnelConnectionStatsEvent {
     uint64_t download = 0;
 };
 
-// Mirrors the real type closely enough for the one thing FreeTunnel asks of it:
-// hand back a sockaddr to format.
+// Mirrors the real ag::SocketAddressStorage: a POD laid out like a sockaddr,
+// family first, padded to the size of sockaddr_in6. No accessors — the real one
+// has none either, and a mock that offered one would let code compile here and
+// fail on the real header, which is exactly what happened once.
 struct SocketAddressStorage {
-    sockaddr_storage ss = {};
-    const sockaddr *c_sockaddr() const { return reinterpret_cast<const sockaddr *>(&ss); }
+#ifdef __APPLE__
+    uint8_t sa_len;
+    uint8_t sa_family;
+#else
+    uint16_t sa_family;
+#endif
+    // No member initialisers, exactly as in the library: they would make the
+    // type non-trivial and it is memcpy'd like the sockaddr it stands in for.
+    uint8_t padding[sizeof(sockaddr_in6) - sizeof(uint16_t)];
 };
+static_assert(sizeof(SocketAddressStorage) == sizeof(sockaddr_in6));
 
 struct VpnConnectionInfoEvent {
     int action = VPN_FCA_TUNNEL;

@@ -14,6 +14,7 @@
 #include "qt_trusttunnel_platform.h"
 
 #include <chrono>
+#include <cstring>
 
 #ifdef _WIN32
 #include <ws2tcpip.h>
@@ -354,11 +355,16 @@ void TestVpnEvents::logTailBufferIsBounded()
 // it went.
 void TestVpnEvents::aConnectionWithNoDomainIsNamedByItsAddress()
 {
-    ag::SocketAddressStorage dst;
-    auto *in4 = reinterpret_cast<sockaddr_in *>(&dst.ss);
-    in4->sin_family = AF_INET;
-    in4->sin_port = htons(443);
-    QVERIFY(inet_pton(AF_INET, "203.0.113.7", &in4->sin_addr) == 1);
+    // Filled through a sockaddr_in and read back as the storage, which is the
+    // same trick the real code does in the other direction — and the reason the
+    // mock mirrors the library's layout instead of wrapping a sockaddr_storage.
+    ag::SocketAddressStorage dst = {};
+    static_assert(sizeof(sockaddr_in) <= sizeof(ag::SocketAddressStorage));
+    sockaddr_in in4 = {};
+    in4.sin_family = AF_INET;
+    in4.sin_port = htons(443);
+    QVERIFY(inet_pton(AF_INET, "203.0.113.7", &in4.sin_addr) == 1);
+    std::memcpy(&dst, &in4, sizeof(in4));
 
     ag::VpnConnectionInfoEvent ev;
     ev.action = ag::VPN_FCA_BYPASS;

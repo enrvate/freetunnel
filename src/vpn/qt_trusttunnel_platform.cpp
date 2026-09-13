@@ -210,8 +210,15 @@ QString qt_trusttunnel_connection_info_line(ag::VpnConnectionInfoEvent *event)
     // dash for it made a whole class of log lines useless — "bypass -" says
     // nothing about what was bypassed. The address is what there is to say.
     QString target = event->domain ? QString::fromUtf8(event->domain) : QString();
-    if (target.isEmpty() && event->dst != nullptr)
-        target = qt_trusttunnel_format_address(event->dst->c_sockaddr());
+    if (target.isEmpty() && event->dst != nullptr) {
+        // ag::SocketAddressStorage is a POD laid out like a sockaddr — family
+        // first, padded to the size of sockaddr_in6, with a static_assert in
+        // the library pinning that. It has no accessor, so the cast is how it
+        // is read; an earlier version called a c_sockaddr() that belongs to the
+        // neighbouring SocketAddress class and does not exist here.
+        target = qt_trusttunnel_format_address(
+                reinterpret_cast<const struct sockaddr *>(event->dst));
+    }
     if (target.isEmpty())
         target = QStringLiteral("unknown destination");
     return QStringLiteral("%1 %2").arg(action, target);

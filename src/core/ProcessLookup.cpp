@@ -586,6 +586,13 @@ int dumpOneFamily(int fd, const SocketTable &table, std::uint32_t seq, QByteArra
 // agree row for row — the same inodes, protocols and ports, none missing on
 // either side.
 //
+// They are not quite identical, and the difference runs the safe way: this
+// reports a socket from the moment it is bound, while the text tables show it
+// only once it is listening or connected. Nothing depends on that — a connect
+// request reaches us after connect(), by which point both sources have it — but
+// it is why a row-by-row comparison can differ on a machine where something
+// binds a port and holds it.
+//
 // Returns false when the kernel will not answer, which is how one built without
 // the inet_diag modules replies. The caller reads the text tables instead. It is
 // all four dumps or none: a machine with tcp_diag and no udp_diag would
@@ -728,13 +735,12 @@ void ProcessLookup::walk(std::chrono::steady_clock::time_point now)
     // Gathered in full every time, which is a deliberate choice rather than an
     // oversight. Remembering which port an inode had would be sound, since
     // neither changes for the life of a socket; the trap is the inodes that are
-    // NOT mentioned. A socket that exists but is not yet connected appears
-    // nowhere at all (measured: neither before bind() nor after it, only once it
-    // is connected or listening) and is indistinguishable from a unix or netlink
-    // socket, which will never appear. Remembering "this one has no port" would
-    // therefore catch every connection whose socket was created a few
-    // microseconds before a walk happened to look, and misroute it for as long
-    // as it lasted — the intermittent failure this whole change exists to
+    // NOT mentioned. A socket that has been created and not yet bound appears
+    // nowhere — measured against both sources — and is indistinguishable from a
+    // unix or netlink socket, which will never appear. Remembering "this one has
+    // no port" would therefore catch every connection whose socket was created a
+    // few microseconds before a walk happened to look, and misroute it for as
+    // long as it lasted — the intermittent failure this whole change exists to
     // remove, reintroduced by the optimisation meant to pay for it.
     QByteArray buffer(256 * 1024, Qt::Uninitialized);
     QList<SocketOwner> sockets;

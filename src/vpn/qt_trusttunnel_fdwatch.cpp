@@ -4,6 +4,8 @@
 // rlimit and every socket/file operation starts failing.
 #include "qt_trusttunnel_client.h"
 
+#include <algorithm>
+
 #ifndef _WIN32
 #include <dirent.h>
 #include <sys/resource.h>
@@ -80,18 +82,46 @@ void QtTrustTunnelClient::checkFdHealth() {
     if (openFds < 0)
         return;
 
-    constexpr int kFdGrowthThreshold = 64;
-    if (m_fdBaseline >= 0 && openFds - m_fdBaseline >= kFdGrowthThreshold) {
+    // Judged on the FLOOR, not the current count. This check exists to catch
+    // descriptors that are lost and never returned, and comparing the current
+    // count to the connect-time baseline could not tell that apart from load —
+    // which per-application split tunnelling turned from theory into a daily
+    // false alarm. A program routed around the tunnel opens its connections
+    // directly from this process, so a browser on the bypass list legitimately
+    // holds dozens of sockets here, and the user was told the connection was
+    // "using an unusual number of system resources" for working correctly.
+    //
+    // A leak never gives its descriptors back, so the lowest reading in the
+    // window keeps climbing. Load raises the peak and lets it fall again, and
+    // one low reading anywhere in the window is enough to say so.
+    constexpr int kFdWindow = 6;
+    m_fdSamples.append(openFds);
+    while (m_fdSamples.size() > kFdWindow)
+        m_fdSamples.removeFirst();
+
+    const int fdLimit = getFdLimit();
+    // Scaled to the resource rather than a flat 64 — on a machine that allows
+    // ten thousand descriptors, sixty-four of them is noise — but capped, because
+    // a limit of a million would put the threshold past any leak worth catching.
+    // A thousand descriptors that never come back is unambiguous either way.
+    const int growthThreshold = std::clamp(fdLimit > 0 ? fdLimit / 4 : 256, 256, 1024);
+    const int windowFloor =
+            m_fdSamples.size() == kFdWindow ? *std::min_element(m_fdSamples.cbegin(),
+                                                                m_fdSamples.cend())
+                                            : -1;
+    if (m_fdBaseline >= 0 && windowFloor >= 0 && windowFloor - m_fdBaseline >= growthThreshold) {
         forceFdReconnect(
-                QStringLiteral("[fd watchdog] Open fds grew by %1 since connect (%2 -> %3)")
-                        .arg(openFds - m_fdBaseline)
+                QStringLiteral("[fd watchdog] Open fds have not fallen below %1 across %2 checks, "
+                               "%3 above the baseline of %4 (currently %5)")
+                        .arg(windowFloor)
+                        .arg(kFdWindow)
+                        .arg(windowFloor - m_fdBaseline)
                         .arg(m_fdBaseline)
                         .arg(openFds),
                 QStringLiteral("fd watchdog: reconnecting after fd growth"));
         return;
     }
 
-    const int fdLimit = getFdLimit();
     if (fdLimit < 0)
         return;
     const double usage = static_cast<double>(openFds) / static_cast<double>(fdLimit);

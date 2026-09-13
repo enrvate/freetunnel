@@ -2,6 +2,8 @@
 #include "qt_trusttunnel_client.h"
 #include "qt_trusttunnel_platform.h"
 #include "qt_trusttunnel_events.h"
+#include "core/AppRules.h"
+#include "core/ProcessLookup.h"
 #include <QCoreApplication>
 #include <QDir>
 #include <QFile>
@@ -185,10 +187,26 @@ void QtTrustTunnelClient::setConfigLocked(ag::TrustTunnelConfig config) {
 }
 
 void QtTrustTunnelClient::setVpnMode(bool selective) {
-    std::lock_guard<std::mutex> lk(m_configMutex);
-    m_selectiveMode = selective;
-    if (m_config.has_value())
-        m_config->mode = selective ? ag::VPN_MODE_SELECTIVE : ag::VPN_MODE_GENERAL;
+    {
+        std::lock_guard<std::mutex> lk(m_configMutex);
+        m_selectiveMode = selective;
+        if (m_config.has_value())
+            m_config->mode = selective ? ag::VPN_MODE_SELECTIVE : ag::VPN_MODE_GENERAL;
+    }
+    // App rules read the mode the same way the routes and domains lists do, so
+    // it has to reach their snapshot too — otherwise switching mode would flip
+    // every list except this one.
+    std::lock_guard<std::mutex> lk(m_appRules->mutex);
+    m_appRules->selective = selective;
+}
+
+void QtTrustTunnelClient::setAppRules(const QStringList &rules) {
+    // Sanitized here rather than trusted from the IPC: this runs in the
+    // elevated helper, and a rule that cannot match is better dropped than
+    // carried into a routing decision.
+    const QStringList clean = freetunnel::sanitizedAppRules(rules);
+    std::lock_guard<std::mutex> lk(m_appRules->mutex);
+    m_appRules->rules = clean;
 }
 
 void QtTrustTunnelClient::setKillSwitch(bool enabled) {
@@ -321,12 +339,24 @@ QtTrustTunnelClient::State QtTrustTunnelClient::state() const {
 }
 
 void QtTrustTunnelClient::setLogLevel(const QString &level) {
-    std::lock_guard<std::mutex> lk(m_configMutex);
-    m_logLevel = qt_trusttunnel_parse_log_level(level);
-    ag::Logger::set_log_level(m_logLevel);
-    if (m_config.has_value()) {
-        m_config->loglevel = m_logLevel;
+    {
+        std::lock_guard<std::mutex> lk(m_configMutex);
+        m_logLevel = qt_trusttunnel_parse_log_level(level);
+        ag::Logger::set_log_level(m_logLevel);
+        if (m_config.has_value()) {
+            m_config->loglevel = m_logLevel;
+        }
     }
+    // The per-connection handler reads this from its own snapshot rather than
+    // the config, for the same reason it reads the rules there: it must not
+    // depend on this object still existing.
+    std::lock_guard<std::mutex> lk(m_appRules->mutex);
+    // "info" and not "debug": that is what the Verbose logs switch actually
+    // sends (BackendSettings.cpp sends info when on, warn when off). Checking
+    // for debug here would have made this dead code.
+    const QString l = level.toLower();
+    m_appRules->verbose = l == QLatin1String("info") || l == QLatin1String("debug")
+            || l == QLatin1String("trace");
 }
 
 void QtTrustTunnelClient::setExcludedRoutes(const std::vector<std::string> &excludeRoutes) {
@@ -390,6 +420,171 @@ void QtTrustTunnelClient::postConnectionInfo(quint64 session, const QString &lin
             Qt::QueuedConnection);
 }
 
+namespace {
+
+// One line, in the order someone diagnosing reads it: did it run, as whom, how
+// much did it see, and how long did it take.
+QString describeScan(const freetunnel::ProcessLookup &lookup)
+{
+    const freetunnel::ProcessLookup::ScanReport &r = lookup.lastScan();
+#ifdef Q_OS_LINUX
+    // Only Linux has two ways of reading the socket tables, and which one
+    // answered is the difference between a walk of about one millisecond and
+    // one of nearly three — worth seeing in a report before anyone concludes
+    // the machine is slow.
+    const QString source = r.netlink ? QStringLiteral(", netlink") : QStringLiteral(", /proc/net");
+#else
+    const QString source;
+#endif
+    return QStringLiteral("app rules: walk %1 %2 — euid %3, pids %4 (%5 watched, %6 without a "
+                          "program, %7 refused), sockets %8, entries %9, distinct %10, "
+                          "errno %11, %12 ms%13")
+            .arg(lookup.walksTaken())
+            .arg(r.ok ? QStringLiteral("ok") : QStringLiteral("FAILED"))
+            .arg(r.euid)
+            .arg(r.pidsScanned)
+            .arg(r.pidsWatched)
+            .arg(r.pidsWithoutProgram)
+            .arg(r.pidsSkipped)
+            .arg(r.socketsSeen)
+            .arg(r.entries)
+            .arg(r.distinctPids)
+            .arg(r.lastErrno)
+            .arg(r.elapsedUs / 1000.0, 0, 'f', 2)
+            .arg(source);
+}
+
+} // namespace
+
+// Split out of makeCallbacks, which had grown to 145 lines around it. The seam
+// is the one the code already had: this is a self-contained lambda with its own
+// captures and no reference to anything else being built there.
+std::function<void(const ag::VpnConnectRequestSnapshot &, ag::VpnConnectDecision *)>
+QtTrustTunnelClient::makeConnectRequestHandler(const GuardPtr &guard, quint64 session) {
+    // Per-application split tunnelling. This runs on the wrapper's own loop, one
+    // connection at a time, which is what lets it read the system's socket
+    // tables without stalling traffic. The rules come from a shared snapshot so
+    // the lookup needs no lock on this object; `this` is touched only at the
+    // end, to log, and only under the liveness guard.
+    auto lookup = std::make_shared<freetunnel::ProcessLookup>();
+    auto scanWarned = std::make_shared<bool>(false);
+    auto appRules = m_appRules;
+    return [this, guard, session, appRules, lookup,
+            scanWarned](const ag::VpnConnectRequestSnapshot &req,
+                                                 ag::VpnConnectDecision *decision) {
+        if (decision == nullptr)
+            return;
+        QStringList rules;
+        bool selective = false;
+        bool verbose = false;
+        {
+            std::lock_guard<std::mutex> lk(appRules->mutex);
+            rules = appRules->rules;
+            selective = appRules->selective;
+            verbose = appRules->verbose;
+        }
+        // No rules means the feature is off, and off must cost nothing: no
+        // table walk, and the same VPN_CA_DEFAULT the wrapper answered before
+        // any of this existed.
+        if (rules.isEmpty())
+            return;
+
+        // Which programs the walk needs to look at. Pushed on every connection
+        // rather than wired to a change notification: comparing the list is
+        // cheaper than the notification would be to get right, and a rule the
+        // user has just added takes effect on their next connection instead of
+        // on their next session.
+        lookup->setWatchList(rules);
+
+        const freetunnel::LocalFlow flow{req.family, req.proto, req.src_port,
+                                         QString::fromStdString(req.src_ip)};
+        const freetunnel::AppIdentity app = lookup->resolve(flow);
+        switch (freetunnel::appActionFor(app, rules, selective)) {
+        case freetunnel::AppAction::ForceBypass:
+            decision->action = ag::VPN_CA_FORCE_BYPASS;
+            break;
+        case freetunnel::AppAction::ForceTunnel:
+            decision->action = ag::VPN_CA_FORCE_REDIRECT;
+            break;
+        case freetunnel::AppAction::Default:
+            break;
+        }
+        // decision->app_name is deliberately NOT set. It looks like a harmless way
+        // to get the program into the core's own log, and it is not: the core
+        // passes it to the upstream, which puts it in the CONNECT request sent
+        // to the VPN endpoint (upstream open_connection -> send_connect_request
+        // -> make_http_connect_request). That would tell the operator which
+        // application opened every connection — a thing this app exists to avoid
+        // telling anyone. The line below puts it in the local log instead, which
+        // is where the user was going to look anyway.
+
+        // And say so in the app's own log. Without this the feature is
+        // unobservable: a rule that never matched and a rule that matched and
+        // was overruled look identical from outside, and the first question
+        // anyone asks — "did it even see my program?" — has no answer.
+        // Said once per session, in the app's own log, because the helper's
+        // stderr goes to a root-owned temp file nobody reporting a problem will
+        // ever read. The numbers are the point: distinct is what distinguishes
+        // "this process cannot see other processes" (1) from "the table is full
+        // and the port simply was not in it" (hundreds), and those need
+        // completely different fixes. It replaces a yes/no that could not fire
+        // in either case.
+        if (!*scanWarned) {
+            *scanWarned = true;
+            QString line = describeScan(*lookup);
+            // When the walk saw the machine and none of it matched, the rules
+            // themselves are the next thing anyone would ask for, and asking
+            // costs a round trip through whoever is reporting the problem. This
+            // is what a real one turned on: a rule naming the file a menu entry
+            // points at, which is a launcher that execs something else and so is
+            // never a running program.
+            //
+            // Only where the walk decides which processes to open, which is
+            // Linux: the other two read every process and leave pidsWatched at
+            // zero whatever the rules say, so the same test there would print
+            // this on every session including the ones that work.
+#ifdef Q_OS_LINUX
+            if (lookup->lastScan().ok && lookup->lastScan().pidsWatched == 0
+                && lookup->lastScan().pidsScanned > 0) {
+                line += QStringLiteral("\n  no running program matches: %1")
+                                .arg(rules.join(QStringLiteral(", ")));
+            }
+#endif
+            std::lock_guard<std::mutex> lk(guard->mutex);
+            if (guard->alive)
+                postConnectionInfo(session, line);
+        }
+
+        const bool routed = decision->action == ag::VPN_CA_FORCE_BYPASS
+                || decision->action == ag::VPN_CA_FORCE_REDIRECT;
+        // A connection nobody wrote a rule for is the overwhelming majority, and
+        // logging those buries the handful that matter under every program on
+        // the machine. Verbose is where that question gets answered.
+        if (!routed && !verbose)
+            return;
+        // An unnamed flow now means one of two things, and the source endpoint is
+        // what tells them apart in a report: either no rule names the program —
+        // the walk deliberately never opened it, which is the ordinary case and
+        // the reason this line only appears in verbose mode — or a rule does
+        // name it and the walk could not see it, which the scan line above
+        // reports as refusals.
+        const QString src = QString::fromStdString(req.src_ip);
+        const QString where = src.isEmpty()          ? QStringLiteral("port %1").arg(req.src_port)
+                : src.contains(QLatin1Char(':'))     ? QStringLiteral("[%1]:%2").arg(src).arg(req.src_port)
+                                                     : QStringLiteral("%1:%2").arg(src).arg(req.src_port);
+        const QString who =
+                app.name.isEmpty() ? QStringLiteral("unknown (%1)").arg(where) : app.name;
+        const QString what = decision->action == ag::VPN_CA_FORCE_BYPASS ? QStringLiteral("bypass")
+                : decision->action == ag::VPN_CA_FORCE_REDIRECT          ? QStringLiteral("tunnel")
+                                                                         : QStringLiteral("no rule");
+        // The lookup above may be slow; the guard is taken only now, and only
+        // to reach back into an object that may have been destroyed meanwhile.
+        std::lock_guard<std::mutex> lk(guard->mutex);
+        if (guard->alive)
+            postConnectionInfo(session, QStringLiteral("app %1 → %2").arg(who, what));
+    };
+}
+
 ag::VpnCallbacks QtTrustTunnelClient::makeCallbacks(const GuardPtr &guard) {
     // Core callbacks are queued to our event loop, so events from a client that
     // has since been torn down (config switch: disconnect + connect a new one)
@@ -427,6 +622,7 @@ ag::VpnCallbacks QtTrustTunnelClient::makeCallbacks(const GuardPtr &guard) {
         if (guard->alive)
             postTunnelStats(session, up, down);
     };
+    callbacks.connect_request_handler = makeConnectRequestHandler(guard, session);
     callbacks.connection_info_handler = [this, guard, session](ag::VpnConnectionInfoEvent *event) {
         const QString line = qt_trusttunnel_connection_info_line(event);
         std::lock_guard<std::mutex> lk(guard->mutex);
@@ -509,6 +705,7 @@ void QtTrustTunnelClient::handleCoreConnected()
     m_networkWaitTimer.stop();
     m_everConnected = true;
     m_fdBaseline = countOpenFds();
+    m_fdSamples.clear();
     setState(State::Connected);
     emit vpnConnected();
 }

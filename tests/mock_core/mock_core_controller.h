@@ -191,6 +191,20 @@ public:
         cbs.tunnel_stats_handler(&ev);
     }
 
+    // Ask the client what to do with one connection, the way the wrapper's
+    // extra loop does. Returns the decision the handler wrote — including the
+    // untouched VPN_CA_DEFAULT when no handler is installed, which is exactly
+    // what the real wrapper would then complete the request with.
+    ag::VpnConnectDecision fireConnectRequest(uint64_t id, const ag::VpnConnectRequestSnapshot &req)
+    {
+        ag::VpnCallbacks cbs = callbacksFor(id);
+        ag::VpnConnectDecision decision;
+        if (!cbs.connect_request_handler)
+            return decision;
+        cbs.connect_request_handler(req, &decision);
+        return decision;
+    }
+
     // Returned by fireVerifyCertificate when the client installed no verify
     // handler at all. A missing handler leaves event->result at whatever the core
     // initialised it to — 0, i.e. ACCEPT — so "no handler" and "certificate is

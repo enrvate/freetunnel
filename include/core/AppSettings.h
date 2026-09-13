@@ -26,6 +26,11 @@ struct AppSettings {
     // Excluded routes: IP/CIDR subnets that bypass the tunnel at the routing
     // level (the core's excluded_routes), independent of the domain rules above.
     QStringList excluded_routes;
+    // Per-application split tunnelling. Read the same way as excluded_routes and
+    // the domain rules: in general mode these programs leave the tunnel, in
+    // "Through VPN" mode they are the only ones that enter it. Each entry is an
+    // absolute path or a bare executable name (see core/AppRules.h).
+    QStringList app_rules;
 
     // Split-tunnel profiles: named sets of domain-bypass rules. active_profile is
     // the profile currently being *edited* on the Split page; its rules mirror

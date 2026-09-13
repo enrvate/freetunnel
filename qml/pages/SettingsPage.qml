@@ -262,4 +262,5 @@ Item {
             Item { Layout.preferredHeight: 14 }
         }
     }
+
 }

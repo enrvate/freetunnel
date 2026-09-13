@@ -1,6 +1,15 @@
 // cppcheck-suppress-file missingIncludeSystem
 #include "qt_trusttunnel_client.h"
 
+// For inet_ntop/ntohs in the address formatter below.
+#ifdef _WIN32
+#include <ws2tcpip.h>
+#else
+#include <arpa/inet.h>
+#include <netinet/in.h>
+#include <sys/socket.h>
+#endif
+
 #include <QDir>
 #include <QHash>
 #include <QStandardPaths>
@@ -164,6 +173,28 @@ void qt_trusttunnel_verify_server_certificate(ag::VpnVerifyCertificateEvent *eve
     event->result = 0;
 }
 
+// "203.0.113.7:443", or "[2001:db8::1]:443" — bracketed so the port is readable
+// next to a v6 address instead of running into its colons.
+QString qt_trusttunnel_format_address(const struct sockaddr *sa)
+{
+    if (sa == nullptr)
+        return {};
+    char buf[INET6_ADDRSTRLEN] = {};
+    if (sa->sa_family == AF_INET) {
+        const auto *in4 = reinterpret_cast<const struct sockaddr_in *>(sa);
+        if (inet_ntop(AF_INET, &in4->sin_addr, buf, sizeof(buf)) == nullptr)
+            return {};
+        return QStringLiteral("%1:%2").arg(QLatin1String(buf)).arg(ntohs(in4->sin_port));
+    }
+    if (sa->sa_family == AF_INET6) {
+        const auto *in6 = reinterpret_cast<const struct sockaddr_in6 *>(sa);
+        if (inet_ntop(AF_INET6, &in6->sin6_addr, buf, sizeof(buf)) == nullptr)
+            return {};
+        return QStringLiteral("[%1]:%2").arg(QLatin1String(buf)).arg(ntohs(in6->sin6_port));
+    }
+    return {};
+}
+
 QString qt_trusttunnel_connection_info_line(ag::VpnConnectionInfoEvent *event)
 {
     if (!event)
@@ -175,6 +206,20 @@ QString qt_trusttunnel_connection_info_line(ag::VpnConnectionInfoEvent *event)
     case ag::VPN_FCA_REJECT: action = QStringLiteral("reject"); break;
     default: action = QStringLiteral("unknown"); break;
     }
-    const QString domain = event->domain ? QString::fromUtf8(event->domain) : QStringLiteral("-");
-    return QStringLiteral("%1 %2").arg(action, domain);
+    // A connection made straight to an address has no domain, and printing a
+    // dash for it made a whole class of log lines useless — "bypass -" says
+    // nothing about what was bypassed. The address is what there is to say.
+    QString target = event->domain ? QString::fromUtf8(event->domain) : QString();
+    if (target.isEmpty() && event->dst != nullptr) {
+        // ag::SocketAddressStorage is a POD laid out like a sockaddr — family
+        // first, padded to the size of sockaddr_in6, with a static_assert in
+        // the library pinning that. It has no accessor, so the cast is how it
+        // is read; an earlier version called a c_sockaddr() that belongs to the
+        // neighbouring SocketAddress class and does not exist here.
+        target = qt_trusttunnel_format_address(
+                reinterpret_cast<const struct sockaddr *>(event->dst));
+    }
+    if (target.isEmpty())
+        target = QStringLiteral("unknown destination");
+    return QStringLiteral("%1 %2").arg(action, target);
 }

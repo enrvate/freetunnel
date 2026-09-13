@@ -2,6 +2,7 @@
 #pragma once
 #include <QObject>
 #include <QString>
+#include <QList>
 #include <QStringList>
 #include <QTimer>
 #include <QThread>
@@ -60,6 +61,10 @@ public:
     Q_INVOKABLE void setExcludedRouteStrings(const QStringList &routes);
     void setExtraExclusions(const std::vector<std::string> &exclusions);
     Q_INVOKABLE void setVpnMode(bool selective); // selective = route only the exclusions list
+    // Per-application split tunnelling. The list means the same as the routes
+    // and domains lists: in general mode these apps leave the tunnel, in
+    // selective mode they are the only ones that enter it.
+    Q_INVOKABLE void setAppRules(const QStringList &rules);
     Q_INVOKABLE void setKillSwitch(bool enabled);
     // Whether the core writes a session log at all. The PATH is ours to choose —
     // it is never accepted from outside, see the note in the .cpp.
@@ -131,6 +136,10 @@ private:
     void postConnectionInfo(quint64 session, const QString &line);
 
     ag::VpnCallbacks makeCallbacks(const GuardPtr &guard);
+    // Split out of makeCallbacks: a self-contained callback with its own
+    // captures, which is where the seam already was.
+    std::function<void(const ag::VpnConnectRequestSnapshot &, ag::VpnConnectDecision *)>
+    makeConnectRequestHandler(const GuardPtr &guard, quint64 session);
     bool joinOrAbandonConnectThread(int waitMs);
     void startConnectAttempt();
     void scheduleReconnect(const QString &reason);
@@ -156,6 +165,29 @@ private:
     static int countOpenFds();
     static int getFdLimit();
 
+    // The connect-request handler runs on the core wrapper's own thread and may
+    // still be running while this object is being destroyed. It DOES capture
+    // `this`, to write its decision to the log, and is safe only because it
+    // reaches back the way every other callback here does: under the liveness
+    // guard, checking alive. Do not remove that check.
+    //
+    // The rules live in this shared snapshot rather than behind m_configMutex
+    // because the handler reads them on every connection, before and outside
+    // that guard — a lookup can be slow, and holding the object's lock across
+    // it would stall teardown.
+    struct AppRuleSnapshot {
+        std::mutex mutex;
+        QStringList rules;
+        bool selective = false;
+        // Every connection asks the handler something, so logging all of them
+        // buries the log in programs nobody wrote a rule for. Decisions that
+        // actually routed something are always logged; the rest only when the
+        // user has asked for verbose logs, which is exactly when "what program
+        // is this connection?" is the question being investigated.
+        bool verbose = false;
+    };
+    std::shared_ptr<AppRuleSnapshot> m_appRules = std::make_shared<AppRuleSnapshot>();
+
     std::unique_ptr<ag::TrustTunnelClient> m_client;
     std::unique_ptr<ag::AutoNetworkMonitor> m_networkMonitor;
     // Guards the config working set: m_config, m_lastConfigToml,
@@ -177,6 +209,19 @@ private:
     QTimer m_reconnectTimer;
     QTimer m_fdWatchdogTimer;
     int m_fdBaseline = -1; // open fd count right after connect (for leak detection)
+    // The last few counts. What distinguishes a leak from load is not the peak
+    // but whether the count ever comes back down: a leak never gives its
+    // descriptors back, so even the LOWEST reading in a recent window keeps
+    // climbing, while load pushes the peak up and lets it fall again.
+    //
+    // Comparing the current count to the connect-time baseline could not tell
+    // those apart, and per-application split tunnelling turned that from a
+    // theoretical flaw into a daily false alarm: a program routed around the
+    // tunnel opens its connections directly from this process, so a browser on
+    // the bypass list legitimately holds dozens of sockets here — and the user
+    // was told the connection was using an unusual number of system resources
+    // for working exactly as asked.
+    QList<int> m_fdSamples;
     QTimer m_networkWaitTimer;   // fires if we stay in WaitingForNetwork too long
     QTimer *m_coreLogPoll = nullptr;
     // Heap-allocated and unparented on purpose: a connect attempt stuck inside

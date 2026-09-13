@@ -347,6 +347,8 @@ private:
             return applyExclusions(c);
         if (cmd == "setRoutes")
             return applyRoutes(c);
+        if (cmd == "setAppRules")
+            return applyAppRules(c);
         if (applyClientSetting(cmd, c))
             return;
         if (cmd == "connect") {
@@ -375,6 +377,14 @@ private:
             routes.append(v.toString());
         QMetaObject::invokeMethod(&m_client, "setExcludedRouteStrings", Qt::QueuedConnection,
                                   Q_ARG(QStringList, routes));
+    }
+
+    void applyAppRules(const QJsonObject &c) {
+        QStringList rules;
+        for (const QJsonValue &v : c.value(QStringLiteral("rules")).toArray())
+            rules.append(v.toString());
+        QMetaObject::invokeMethod(&m_client, "setAppRules", Qt::QueuedConnection,
+                                  Q_ARG(QStringList, rules));
     }
 
     void handleConnect(const QJsonObject &c) {

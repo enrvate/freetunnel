@@ -7,9 +7,12 @@
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <string>
 
 #ifdef _WIN32
 #include <winsock2.h>
+// sockaddr_in6 lives here, not in winsock2.h — the static_assert below needs it.
+#include <ws2tcpip.h>
 #else
 #include <netinet/in.h>
 #include <sys/socket.h>
@@ -38,6 +41,15 @@ enum VpnErrorCode {
     VPN_EC_EVENT_LOOP_FAILURE,
     VPN_EC_INITIAL_CONNECT_FAILED,
     VPN_EC_FATAL_CONNECTIVITY_ERROR,
+};
+
+// What the client may answer to a connect request. Mirrors the core enum; the
+// two forced values are what per-app rules use to override the mode.
+enum VpnConnectAction {
+    VPN_CA_DEFAULT,
+    VPN_CA_FORCE_BYPASS,
+    VPN_CA_FORCE_REDIRECT,
+    VPN_CA_REJECT,
 };
 
 enum VpnFilteredConnectionAction {
@@ -88,9 +100,28 @@ struct VpnTunnelConnectionStatsEvent {
     uint64_t download = 0;
 };
 
+// Mirrors the real ag::SocketAddressStorage: a POD laid out like a sockaddr,
+// family first, padded to the size of sockaddr_in6. No accessors — the real one
+// has none either, and a mock that offered one would let code compile here and
+// fail on the real header, which is exactly what happened once.
+struct SocketAddressStorage {
+#ifdef __APPLE__
+    uint8_t sa_len;
+    uint8_t sa_family;
+#else
+    uint16_t sa_family;
+#endif
+    // No member initialisers, exactly as in the library: they would make the
+    // type non-trivial and it is memcpy'd like the sockaddr it stands in for.
+    uint8_t padding[sizeof(sockaddr_in6) - sizeof(uint16_t)];
+};
+static_assert(sizeof(SocketAddressStorage) == sizeof(sockaddr_in6));
+
 struct VpnConnectionInfoEvent {
     int action = VPN_FCA_TUNNEL;
     const char *domain = nullptr;
+    const SocketAddressStorage *src = nullptr;
+    const SocketAddressStorage *dst = nullptr;
 };
 
 struct SocketProtectEvent {
@@ -105,6 +136,24 @@ struct VpnVerifyCertificateEvent {
     int result = 0;
 };
 
+// Mirrors what vendor/trusttunnel/02-connect-request-handler.patch adds to the
+// real wrapper. Kept in step by hand, like the rest of this mock: a test that
+// builds against a shape the real header no longer has proves nothing.
+struct VpnConnectRequestSnapshot {
+    uint64_t id = 0;
+    int proto = 0;
+    int family = 0;
+    uint16_t src_port = 0;
+    std::string src_ip;
+    std::string app_name;
+};
+
+struct VpnConnectDecision {
+    VpnConnectAction action = VPN_CA_DEFAULT;
+    std::string app_name;
+    int uid = -1;
+};
+
 struct VpnCallbacks {
     std::function<void(SocketProtectEvent *)> protect_handler;
     std::function<void(VpnVerifyCertificateEvent *)> verify_handler;
@@ -112,6 +161,7 @@ struct VpnCallbacks {
     std::function<void(VpnClientOutputEvent *)> client_output_handler;
     std::function<void(VpnTunnelConnectionStatsEvent *)> tunnel_stats_handler;
     std::function<void(VpnConnectionInfoEvent *)> connection_info_handler;
+    std::function<void(const VpnConnectRequestSnapshot &, VpnConnectDecision *)> connect_request_handler;
 };
 
 struct Logger {

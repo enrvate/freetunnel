@@ -22,6 +22,8 @@ private slots:
     void homePageLoads();
     void configsPageLoads();
     void splitPageLoads();
+    void splitPageNamesApplicationsTheWayThePickerDoes();
+    void typingAProgramNameOffersTheProgram();
     void settingsPageLoads();
     void logsPageLoads();
     void createConfigOverlayLoads();
@@ -46,6 +48,36 @@ void TestQmlUi::initTestCase()
 {
     // Icons load through backend.readBundledText — no QML XHR file access needed.
     m_engine.rootContext()->setContextProperty(QStringLiteral("backend"), &m_backend);
+}
+
+// Every `text` in the tree. Chips are built by a Repeater inside a Flow, so
+// there is no single object to ask; what a person would read off the screen is
+// the union of all of them.
+//
+// Visual children as well as QObject ones: a Repeater's delegates are parented
+// into the layout as items, and a walk that only followed QObject::children()
+// found the page's fixed labels and not one chip — which is exactly the half
+// that matters here.
+static QStringList everyText(QObject *node)
+{
+    QStringList out;
+    const QVariant text = node->property("text");
+    if (text.isValid() && !text.toString().isEmpty())
+        out << text.toString();
+    QSet<QObject *> visited;
+    const QObjectList children = node->children();
+    for (QObject *child : children) {
+        visited.insert(child);
+        out << everyText(child);
+    }
+    if (auto *item = qobject_cast<QQuickItem *>(node)) {
+        const QList<QQuickItem *> items = item->childItems();
+        for (QQuickItem *child : items) {
+            if (!visited.contains(child))
+                out << everyText(child);
+        }
+    }
+    return out;
 }
 
 QObject *TestQmlUi::loadPage(const char *qmlPath)
@@ -82,6 +114,49 @@ void TestQmlUi::splitPageLoads()
 {
     QObject *root = loadPage("pages/SplitPage.qml");
     QVERIFY(root);
+    delete root;
+}
+
+// A rule is stored as a path, and the file at the end of that path is not what
+// the person recognises: they picked "Firefox Web Browser" from a list and the
+// file is called firefox. The mock's labels are deliberately not derivable from
+// its rules, so a page that ignored them could not pass this by accident.
+void TestQmlUi::splitPageNamesApplicationsTheWayThePickerDoes()
+{
+    QObject *root = loadPage("pages/SplitPage.qml");
+    QVERIFY(root);
+    const QStringList texts = everyText(root);
+    QVERIFY2(texts.contains(QStringLiteral("Firefox Web Browser")),
+             "the chip must say what the picker said");
+    QVERIFY2(texts.contains(QStringLiteral("Some App")), "and so must the second one");
+    QVERIFY2(!texts.contains(QStringLiteral("firefox")),
+             "not the file name the rule happens to end with");
+    delete root;
+}
+
+// Typing a name has to find the program. A name on its own is not a rule anyone
+// should be asked to spell — it is only a way of pointing at one of the
+// installed applications — so what the field offers comes from the same list the
+// picker shows.
+void TestQmlUi::typingAProgramNameOffersTheProgram()
+{
+    QObject *root = loadPage("pages/SplitPage.qml");
+    QVERIFY(root);
+
+    QObject *input = root->findChild<QObject *>(QStringLiteral("appPathInput"));
+    QVERIFY2(input, "the path field");
+    QObject *suggestions = root->findChild<QObject *>(QStringLiteral("appSuggestions"));
+    QVERIFY2(suggestions, "the suggestion list");
+    QVERIFY2(suggestions->property("rows").toList().isEmpty(), "nothing offered before anything is typed");
+
+    input->setProperty("text", QStringLiteral("fire"));
+    const QVariantList rows = suggestions->property("rows").toList();
+    QCOMPARE(rows.size(), 1);
+    QCOMPARE(rows.first().toMap().value(QStringLiteral("name")).toString(), QStringLiteral("Firefox"));
+
+    // A name that matches nothing offers nothing, rather than everything.
+    input->setProperty("text", QStringLiteral("nothing-is-called-this"));
+    QVERIFY(suggestions->property("rows").toList().isEmpty());
     delete root;
 }
 

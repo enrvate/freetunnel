@@ -172,7 +172,15 @@ jobs:
 
       - name: Patch core wrapper (surface tunnel stats)
         shell: bash
-        run: patch -p1 -d upstream < client/vendor/trusttunnel/tunnel-stats-handler.patch
+        run: |
+          set -eu
+          # Every vendored patch, in filename order — they build on each other's
+          # context, which is why they are numbered. Naming one file here is what
+          # broke the build when a second patch was added and the first was renamed.
+          for p in client/vendor/trusttunnel/*.patch; do
+            echo "==> $(basename "$p")"
+            patch -p1 -d upstream < "$p"
+          done
 
       # quiche (HTTP/3) is built from Rust by conan; ensure a toolchain exists on
       # every runner (macOS/Windows ship one, but install to be safe + on PATH).
@@ -671,7 +679,32 @@ jobs:
             echo "::error::DMG volume still mounted at $MOUNT after five detach attempts"
             exit 1
           fi
-          hdiutil convert "$RW" -format UDZO -imagekey zlib-level=9 -o out/${{ matrix.artifact }}.dmg
+          # The mount point disappearing is not the same as the image being free.
+          # Detaching unmounts the volume first and releases the backing device a
+          # moment later, so the loop above can legitimately succeed while
+          # out/rw.dmg is still attached — and convert then fails outright:
+          #
+          #   hdiutil: convert failed - Resource temporarily unavailable
+          #
+          # Wait for the device to actually let go, then convert. Retried rather
+          # than slept through blindly, so the usual case stays instant.
+          for i in 1 2 3 4 5 6; do
+            if ! hdiutil info 2>/dev/null | grep -qF "$RW"; then break; fi
+            sleep 5
+          done
+          for i in 1 2 3 4 5; do
+            if hdiutil convert "$RW" -format UDZO -imagekey zlib-level=9 \
+                 -o out/${{ matrix.artifact }}.dmg; then
+              break
+            fi
+            if [ "$i" = 5 ]; then
+              echo "::error::hdiutil convert failed five times — not a transient"
+              exit 1
+            fi
+            echo "hdiutil convert failed (attempt $i) — retrying in 10 s"
+            rm -f out/${{ matrix.artifact }}.dmg
+            sleep 10
+          done
           rm -f "$RW"
 
       - name: Package (Windows)

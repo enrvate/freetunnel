@@ -10,7 +10,10 @@
 
 #include <QSignalSpy>
 #include <QStandardPaths>
+#include <QDir>
+#include <QFileInfo>
 #include <QTemporaryDir>
+#include <QUrl>
 
 #include "app/Backend.h"
 #include "core/AppSettings.h"
@@ -33,6 +36,10 @@ private slots:
     void vpnModeIsPersistedAndNormalized();
     void selectiveModeWithNoRulesKeepsTheFullTunnel();
     void selectiveModeIsInactiveWhileSplitIsOff();
+    void appRulesAreRulesToo();
+    void appRulesAreValidatedDedupedAndPersisted();
+    void aDroppedShortcutBecomesARuleForTheProgramItNames();
+    void turningSplitTunnellingOffDoesNotInvertTheAppRules();
 
 private:
     QTemporaryDir m_home;
@@ -267,6 +274,114 @@ void TestBackendSplit::selectiveModeWithNoRulesKeepsTheFullTunnel()
     QVERIFY(!backend.selectiveModeWouldLeak());
 }
 
+// "Through VPN" with applications and no domains is a complete configuration:
+// the listed programs go through the tunnel and nothing else does. Before app
+// rules existed, an empty domain list meant "nothing would be routed", so the
+// tunnel fell back to carrying everything — doing that here would silently
+// route the traffic the user had just arranged to keep out.
+void TestBackendSplit::appRulesAreRulesToo()
+{
+    Backend backend;
+    backend.setSplitEnabled(true);
+    backend.setVpnMode(QStringLiteral("selective"));
+    backend.clearDomains();
+    QVERIFY(backend.selectiveModeWouldLeak());
+
+    QVERIFY(backend.addAppRule(QStringLiteral("firefox")));
+    QVERIFY(backend.selectiveModeActive());
+    QVERIFY2(!backend.selectiveModeWouldLeak(),
+             "an app rule is a rule: the mode the user chose is now safe to apply");
+
+    // And removing the last one has to fall back again, exactly as clearing the
+    // domains does.
+    backend.clearAppRules();
+    QVERIFY(!backend.selectiveModeActive());
+    QVERIFY(backend.selectiveModeWouldLeak());
+}
+
+void TestBackendSplit::appRulesAreValidatedDedupedAndPersisted()
+{
+    {
+        Backend backend;
+        QVERIFY(backend.appRules().isEmpty());
+
+        // Rejected, and not stored: the user is told rather than shown a rule
+        // that could never match anything.
+        QVERIFY(!backend.addAppRule(QString()));
+        QVERIFY(!backend.addAppRule(QStringLiteral("   ")));
+        QVERIFY(!backend.addAppRule(QStringLiteral("relative/path")));
+        QVERIFY(backend.appRules().isEmpty());
+
+        QVERIFY(backend.addAppRule(QStringLiteral("  firefox  ")));
+        QCOMPARE(backend.appRules(), QStringList{QStringLiteral("firefox")});
+        // Re-adding the same program is not an error and not a second entry.
+        QVERIFY(!backend.addAppRule(QStringLiteral("firefox")));
+        QCOMPARE(backend.appRules().size(), 1);
+
+        // Unlike an address, a rule is never split on whitespace — program paths
+        // contain spaces, and splitting one would turn a single valid rule into
+        // several invalid ones.
+#ifdef Q_OS_WIN
+        const QString spaced = QStringLiteral("C:\\Program Files\\Some App\\app.exe");
+#else
+        const QString spaced = QStringLiteral("/opt/Some App/app");
+#endif
+        QVERIFY(backend.addAppRule(spaced));
+        QCOMPARE(backend.appRules().size(), 2);
+        QVERIFY(backend.appRules().last().contains(QLatin1String("Some App")));
+
+        backend.removeAppRule(0);
+        QCOMPARE(backend.appRules().size(), 1);
+        // Out-of-range removals must not throw the list away.
+        backend.removeAppRule(-1);
+        backend.removeAppRule(99);
+        QCOMPARE(backend.appRules().size(), 1);
+    }
+
+    Backend reopened;
+    QCOMPARE(reopened.appRules().size(), 1);
+    QVERIFY(reopened.appRules().first().contains(QLatin1String("Some App")));
+}
+
+// Dropping an icon is the gesture people actually have. What lands on the window
+// is a shortcut, not a program, and a rule made from the shortcut's own path
+// would be stored, listed back, and never match anything.
+void TestBackendSplit::aDroppedShortcutBecomesARuleForTheProgramItNames()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString program = dir.filePath(QStringLiteral("theprogram"));
+    QFile bin(program);
+    QVERIFY(bin.open(QIODevice::WriteOnly));
+    bin.close();
+
+    const QString entry = dir.filePath(QStringLiteral("shortcut.desktop"));
+    QFile f(entry);
+    QVERIFY(f.open(QIODevice::WriteOnly | QIODevice::Text));
+    f.write(QStringLiteral("[Desktop Entry]\nType=Application\nExec=\"%1\" %u\n")
+                    .arg(program).toUtf8());
+    f.close();
+
+    Backend backend;
+    QSignalSpy errors(&backend, &Backend::errorOccurred);
+
+    // The URL form, because that is what a drop hands over.
+    QVERIFY(backend.addApplicationFromPath(QUrl::fromLocalFile(entry).toString()));
+    QCOMPARE(backend.appRules().size(), 1);
+    // Canonical, because that is how rules are stored — and on macOS a temporary
+    // directory is reached through /var, which is a symlink to /private/var.
+    const QString canonical = QFileInfo(program).canonicalFilePath();
+    QCOMPARE(backend.appRules().first(),
+             QDir::toNativeSeparators(canonical.isEmpty() ? program : canonical));
+    QCOMPARE(errors.count(), 0);
+
+    // A folder or a document landing on the window by accident is told apart from
+    // a program, and says so rather than storing something unmatchable.
+    QVERIFY(!backend.addApplicationFromPath(QUrl::fromLocalFile(dir.path()).toString()));
+    QCOMPARE(backend.appRules().size(), 1);
+    QCOMPARE(errors.count(), 1);
+}
+
 void TestBackendSplit::selectiveModeIsInactiveWhileSplitIsOff()
 {
     Backend backend;
@@ -277,6 +392,32 @@ void TestBackendSplit::selectiveModeIsInactiveWhileSplitIsOff()
     // all, so selective mode must not be requested either.
     QVERIFY(!backend.selectiveModeActive());
     QVERIFY(!backend.selectiveModeWouldLeak());
+}
+
+// The nastiest shape this feature can take. In "Through VPN" the list means
+// "only these go through"; in bypass mode the same list means "these stay out".
+// Switching the whole feature off puts the core in general mode — so a list that
+// was still being pushed reversed its meaning, and a user who turned split
+// tunnelling off expecting everything to be protected got the one program they
+// cared about sent out in the clear, with the interface saying it was off.
+void TestBackendSplit::turningSplitTunnellingOffDoesNotInvertTheAppRules()
+{
+    Backend backend;
+    backend.setSplitEnabled(true);
+    backend.setVpnMode(QStringLiteral("selective"));
+    QVERIFY(backend.addAppRule(QStringLiteral("firefox")));
+    QVERIFY(backend.selectiveModeActive());
+
+    backend.setSplitEnabled(false);
+    // The rule stays in the settings — the user did not delete it, and it comes
+    // back when they switch the feature on again.
+    QCOMPARE(backend.appRules().size(), 1);
+    // But it must no longer be in force, in either direction.
+    QVERIFY(!backend.selectiveModeActive());
+    QVERIFY(!backend.selectiveModeWouldLeak());
+
+    backend.setSplitEnabled(true);
+    QVERIFY(backend.selectiveModeActive());
 }
 
 QTEST_MAIN(TestBackendSplit)

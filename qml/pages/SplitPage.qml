@@ -162,6 +162,188 @@ Item {
                        visible: domInput.text.length === 0 && !domInput.activeFocus }
                 MouseArea { anchors.fill: parent; acceptedButtons: Qt.NoButton; cursorShape: Qt.IBeamCursor }
             }
+
+            Item { Layout.preferredHeight: 14 }
+
+            // ----- Applications -----
+            // Here rather than in Settings, because the Mode control at the top of
+            // this page is what decides which way this list points: the same names
+            // mean "only these go through the tunnel" or "these alone stay out of
+            // it". A list whose meaning is flipped from another screen is a list
+            // nobody can read with confidence.
+            RowLayout { Layout.fillWidth: true; spacing: 10
+                SectionLabel { Layout.fillWidth: true; elide: Text.ElideRight; theme: splitRoot.theme
+                    text: backend.vpnMode === "selective" ? qsTr("Applications — via VPN")
+                                                          : qsTr("Applications — bypass VPN") }
+                Text { text: qsTr("Choose…"); font.pixelSize: 12
+                       color: pickMa.containsMouse ? theme.text : theme.accent; font.underline: pickMa.containsMouse
+                    MouseArea { id: pickMa; anchors.fill: parent; anchors.margins: -4; hoverEnabled: true
+                        cursorShape: Qt.PointingHandCursor; onClicked: shell.overlay = "apps" } }
+                Text { text: qsTr("Clear all"); font.pixelSize: 12; visible: backend.appRules.length > 0
+                       color: clrApMa.containsMouse ? Qt.lighter(theme.danger, 1.25) : theme.danger
+                       font.underline: clrApMa.containsMouse
+                    MouseArea { id: clrApMa; anchors.fill: parent; anchors.margins: -4; hoverEnabled: true
+                        cursorShape: Qt.PointingHandCursor; onClicked: shell.showConfirm(qsTr("Clear all applications?"),
+                        qsTr("Clear"), function(){ backend.clearAppRules() }) } }
+            }
+            Flow {
+                Layout.fillWidth: true; spacing: 6
+                visible: backend.appRules.length > 0
+                Layout.topMargin: visible ? 6 : 0
+                Layout.preferredHeight: visible ? implicitHeight : 0
+                Repeater {
+                    model: backend.appRules
+                    Rectangle {
+                        id: apChip
+                        required property string modelData
+                        required property int index
+                        radius: 13; color: theme.surface
+                        implicitWidth: alabel.width + 39; implicitHeight: 28
+                        // The name the picker showed, not the file on disk. A rule
+                        // is stored as a path, and the file at the end of it is
+                        // called "firefox" where the list says "Firefox Web
+                        // Browser" — the person chose the second one.
+                        Text { id: alabel; anchors.left: parent.left; anchors.leftMargin: 11
+                               anchors.verticalCenter: parent.verticalCenter
+                               text: apChip.index < backend.appRuleLabels.length
+                                     ? backend.appRuleLabels[apChip.index]
+                                     : apChip.modelData.split(/[\\/]/).pop()
+                               width: Math.min(implicitWidth, 190); elide: Text.ElideRight
+                               color: theme.text; font.pixelSize: 13 }
+                        ChipX { theme: splitRoot.theme; anchors.left: alabel.right; anchors.leftMargin: 5
+                                anchors.verticalCenter: parent.verticalCenter
+                                onClicked: backend.removeAppRule(apChip.index) }
+                    }
+                }
+            }
+            Rectangle {
+                Layout.fillWidth: true; Layout.preferredHeight: 36; radius: 8
+                Layout.topMargin: 6
+                // Above its neighbours so the suggestions below can be drawn over
+                // what follows on the page instead of between it.
+                z: 5
+                color: apDrop.containsDrag ? theme.surface : theme.inputBg
+                border.width: 1
+                border.color: apDrop.containsDrag || apInput.activeFocus ? theme.accent : theme.inputBorder
+
+                // Typing a name finds the program, the same way the picker does.
+                // A name on its own is not a rule anyone should be asked to spell
+                // — it is only a way of pointing at one of these — so what gets
+                // stored is always the path from the row, never the typed text.
+                //
+                // It opens upward: this is the last thing on the page, and a list
+                // dropping down would be cut off by the edge of the view.
+                Rectangle {
+                    id: apSuggest
+                    objectName: "appSuggestions"
+                    property var rows: []
+                    property int highlighted: 0
+                    function refresh() {
+                        rows = apInput.text.length > 0 ? backend.matchingApplications(apInput.text, 24) : []
+                        highlighted = 0
+                    }
+                    function take(i) {
+                        if (i < 0 || i >= rows.length) return false
+                        backend.addAppRule(rows[i].path)
+                        apInput.text = ""
+                        rows = []
+                        return true
+                    }
+                    visible: apInput.activeFocus && rows.length > 0
+                    anchors.left: parent.left; anchors.right: parent.right
+                    anchors.bottom: parent.top; anchors.bottomMargin: 4
+                    // Three rows visible, and the rest reachable by scrolling.
+                    height: Math.min(3, rows.length) * 42 + 8
+                    radius: 8; color: theme.bg; border.color: theme.border; border.width: 1
+                    ListView {
+                        id: apSuggestList
+                        anchors.fill: parent; anchors.margins: 4
+                        clip: true; model: apSuggest.rows
+                        currentIndex: apSuggest.highlighted
+                        onCurrentIndexChanged: positionViewAtIndex(currentIndex, ListView.Contain)
+                        delegate: Rectangle {
+                            required property var modelData
+                            required property int index
+                            width: apSuggestList.width; height: 42; radius: 6
+                            color: index === apSuggest.highlighted ? theme.surface : "transparent"
+                            Column {
+                                anchors.verticalCenter: parent.verticalCenter
+                                anchors.left: parent.left; anchors.leftMargin: 8
+                                anchors.right: parent.right; anchors.rightMargin: 8
+                                spacing: 1
+                                Text { text: modelData.name; color: theme.text; font.pixelSize: 13
+                                       width: parent.width; elide: Text.ElideRight }
+                                Text { text: modelData.path; color: theme.textFaint; font.pixelSize: 11
+                                       width: parent.width; elide: Text.ElideLeft }
+                            }
+                            MouseArea {
+                                anchors.fill: parent; hoverEnabled: true
+                                cursorShape: Qt.PointingHandCursor
+                                onEntered: apSuggest.highlighted = index
+                                onClicked: apSuggest.take(index)
+                            }
+                        }
+                    }
+                }
+                // The list is rebuilt when the text changes, and once more when
+                // the scan of installed applications finishes — on a machine
+                // where that takes a moment, someone may already be typing.
+                Connections {
+                    target: backend
+                    function onSplitChanged() { apSuggest.refresh() }
+                }
+
+                TextInput {
+                    id: apInput
+                    objectName: "appPathInput"
+                    anchors.fill: parent; anchors.leftMargin: 12; anchors.rightMargin: 12
+                    verticalAlignment: TextInput.AlignVCenter; clip: true
+                    font.pixelSize: 13; color: theme.text
+                    onTextChanged: apSuggest.refresh()
+                    // Enter takes the highlighted suggestion when there is one.
+                    // Otherwise it is a path, which is the other way in.
+                    onAccepted: {
+                        if (apSuggest.visible && apSuggest.take(apSuggest.highlighted)) return
+                        if (backend.addApplicationFromPath(text)) text = ""
+                    }
+                    Keys.onDownPressed: function(event) {
+                        if (!apSuggest.visible) { event.accepted = false; return }
+                        apSuggest.highlighted = Math.min(apSuggest.highlighted + 1, apSuggest.rows.length - 1)
+                    }
+                    Keys.onUpPressed: function(event) {
+                        if (!apSuggest.visible) { event.accepted = false; return }
+                        apSuggest.highlighted = Math.max(apSuggest.highlighted - 1, 0)
+                    }
+                    Keys.onEscapePressed: {
+                        // First press puts the suggestions away, second leaves the
+                        // field: closing both at once loses what was typed.
+                        if (apSuggest.visible) apSuggest.rows = []
+                        else focus = false
+                    }
+                }
+                Text { anchors.left: parent.left; anchors.leftMargin: 12; anchors.verticalCenter: parent.verticalCenter
+                       anchors.right: parent.right; anchors.rightMargin: 12; elide: Text.ElideRight
+                       text: apDrop.containsDrag ? qsTr("Drop to add this application")
+                                                 : qsTr("Drop an application here, or paste its full path")
+                       color: apDrop.containsDrag ? theme.accent : theme.textFaint; font.pixelSize: 13
+                       visible: apInput.text.length === 0 && !apInput.activeFocus }
+                // Dropping the icon is the natural gesture, and the only one that
+                // works for someone who does not know where their program lives.
+                // Whatever lands here — the program, a .desktop entry, a .lnk, an
+                // .app bundle — the backend follows it to the executable.
+                DropArea {
+                    id: apDrop
+                    anchors.fill: parent
+                    keys: ["text/uri-list"]
+                    onDropped: function(drop) {
+                        if (!drop.hasUrls) { drop.accepted = false; return }
+                        for (var i = 0; i < drop.urls.length; ++i)
+                            backend.addApplicationFromPath(drop.urls[i].toString())
+                        drop.accepted = true
+                    }
+                }
+                MouseArea { anchors.fill: parent; acceptedButtons: Qt.NoButton; cursorShape: Qt.IBeamCursor }
+            }
             Item { Layout.preferredHeight: 16 }
         }
     }

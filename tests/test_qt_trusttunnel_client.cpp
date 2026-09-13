@@ -5,6 +5,18 @@
 // timer thread-affinity and cross-thread command handling are exercised too.
 #include <QtTest>
 
+#include <QCoreApplication>
+#include <QFileInfo>
+#include <QTcpServer>
+
+#ifdef Q_OS_WIN
+#include <winsock2.h>
+#else
+#include <netinet/in.h>
+#include <sys/resource.h>
+#include <sys/socket.h>
+#endif
+
 #include <QPointer>
 #include <QSignalSpy>
 #include <QThread>
@@ -74,6 +86,9 @@ private slots:
     }
 
     void connectReachesConnectedAndDisconnects();
+    void anAppRuleTakesItsOwnConnectionOutOfTheTunnel();
+    void selectiveModeSendsAMatchedAppTheOtherWay();
+    void withNoAppRulesNothingIsForcedAndNothingIsLookedUp();
     void staleEventFromPreviousSessionIsIgnored();
     void failedAttemptSchedulesWorkingRetry();
     void coreDropTriggersAutoReconnect();
@@ -81,6 +96,7 @@ private slots:
     void disconnectWhileConnectStuckAbandonsAttempt();
     void networkWaitTimeoutForcesReconnect();
     void fdWatchdogForcesReconnect();
+    void fdWatchdogIgnoresTrafficThatComesBackDown();
     void killSwitchKeepsTheClientAliveWhileWaitingForNetwork();
     void malformedConfigReportsErrorAndDoesNotConnect();
     void structurallyInvalidConfigReportsError();
@@ -146,6 +162,91 @@ void TestQtTrustTunnelClient::connectReachesConnectedAndDisconnects()
     // to Error/Reconnecting from stray callbacks or timers.
     QTest::qWait(600);
     QCOMPARE(m_lastState, State::Disconnected);
+}
+
+// End to end through the real decision path: this test binary opens a real
+// socket, names itself in a rule, and the core asks what to do with that exact
+// connection. Nothing here is stubbed except the core itself — the rule
+// matching and the process lookup are the shipping ones.
+void TestQtTrustTunnelClient::anAppRuleTakesItsOwnConnectionOutOfTheTunnel()
+{
+    auto &ctl = mockcore::Controller::instance();
+    QTcpServer server;
+    QVERIFY(server.listen(QHostAddress::LocalHost, 0));
+
+    m_client->setVpnMode(false); // general: a listed app leaves the tunnel
+    m_client->setAppRules({QFileInfo(QCoreApplication::applicationFilePath()).fileName()});
+
+    beginConnect();
+    QTRY_VERIFY(ctl.connectCallCount() >= 1);
+    const quint64 id = ctl.lastClientId();
+
+    ag::VpnConnectRequestSnapshot req;
+    req.id = 1;
+    req.proto = IPPROTO_TCP;
+    req.family = AF_INET;
+    req.src_port = server.serverPort();
+    req.src_ip = "127.0.0.1";
+
+    const ag::VpnConnectDecision decision = ctl.fireConnectRequest(id, req);
+    QCOMPARE(decision.action, ag::VPN_CA_FORCE_BYPASS);
+    // And the program's name must NOT be handed back to the core. The core
+    // forwards it to the upstream, which puts it in the CONNECT request sent to
+    // the VPN endpoint — so naming it here would tell the operator which
+    // application opened every connection. It was set once; this is what keeps
+    // it from coming back.
+    QVERIFY2(decision.app_name.empty(),
+             "the application name must not reach the VPN endpoint");
+}
+
+// The same list must mean the opposite thing in the other mode, exactly as the
+// route and domain lists already do.
+void TestQtTrustTunnelClient::selectiveModeSendsAMatchedAppTheOtherWay()
+{
+    auto &ctl = mockcore::Controller::instance();
+    QTcpServer server;
+    QVERIFY(server.listen(QHostAddress::LocalHost, 0));
+
+    m_client->setVpnMode(true);
+    m_client->setAppRules({QFileInfo(QCoreApplication::applicationFilePath()).fileName()});
+
+    beginConnect();
+    QTRY_VERIFY(ctl.connectCallCount() >= 1);
+    const quint64 id = ctl.lastClientId();
+
+    ag::VpnConnectRequestSnapshot req;
+    req.id = 2;
+    req.proto = IPPROTO_TCP;
+    req.family = AF_INET;
+    req.src_port = server.serverPort();
+    req.src_ip = "127.0.0.1";
+
+    QCOMPARE(ctl.fireConnectRequest(id, req).action, ag::VPN_CA_FORCE_REDIRECT);
+}
+
+// With the feature unused, every connection must take exactly the path it took
+// before it existed — and must not pay for a process lookup to find that out.
+void TestQtTrustTunnelClient::withNoAppRulesNothingIsForcedAndNothingIsLookedUp()
+{
+    auto &ctl = mockcore::Controller::instance();
+    QTcpServer server;
+    QVERIFY(server.listen(QHostAddress::LocalHost, 0));
+
+    beginConnect();
+    QTRY_VERIFY(ctl.connectCallCount() >= 1);
+    const quint64 id = ctl.lastClientId();
+
+    ag::VpnConnectRequestSnapshot req;
+    req.id = 3;
+    req.proto = IPPROTO_TCP;
+    req.family = AF_INET;
+    req.src_port = server.serverPort();
+    req.src_ip = "127.0.0.1";
+
+    const ag::VpnConnectDecision decision = ctl.fireConnectRequest(id, req);
+    QCOMPARE(decision.action, ag::VPN_CA_DEFAULT);
+    // No rules, no lookup, so nothing to name either.
+    QVERIFY(decision.app_name.empty());
 }
 
 void TestQtTrustTunnelClient::staleEventFromPreviousSessionIsIgnored()
@@ -327,6 +428,53 @@ void TestQtTrustTunnelClient::killSwitchKeepsTheClientAliveWhileWaitingForNetwor
     QTRY_COMPARE(m_lastState, State::Connected);
 }
 
+// The regression that made this worth changing. A program routed around the
+// tunnel opens its connections directly from this process, so a browser on the
+// bypass list holds many sockets here — and the old check, which compared the
+// current count to the count at connect, called that a leak and told the user
+// their connection was "using an unusual number of system resources". Load that
+// comes back down must be left alone.
+void TestQtTrustTunnelClient::fdWatchdogIgnoresTrafficThatComesBackDown()
+{
+#ifdef Q_OS_WIN
+    QSKIP("fd counting is not supported on Windows — the watchdog is inert there");
+#else
+    auto &ctl = mockcore::Controller::instance();
+
+    beginConnect();
+    QTRY_VERIFY(ctl.connectCallCount() >= 1);
+    ctl.fireStateChanged(ctl.lastClientId(), ag::VPN_SS_CONNECTED);
+    QTRY_COMPARE(m_lastState, State::Connected);
+
+    struct rlimit rl {};
+    QVERIFY(::getrlimit(RLIMIT_NOFILE, &rl) == 0);
+    const int threshold = std::clamp(static_cast<int>(rl.rlim_cur) / 4, 256, 1024);
+
+    // Three bursts well past the threshold, each released before the next —
+    // exactly the shape of a browser loading pages.
+    for (int round = 0; round < 3; ++round) {
+        std::vector<int> fds;
+        for (int i = 0; i < threshold + 32; ++i) {
+            const int fd = ::open("/dev/null", O_RDONLY);
+            if (fd >= 0)
+                fds.push_back(fd);
+        }
+        if (static_cast<int>(fds.size()) < threshold + 1) {
+            for (const int fd : fds)
+                ::close(fd);
+            QSKIP("cannot open enough descriptors to make this meaningful here");
+        }
+        QTest::qWait(400); // at least one watchdog check sees the peak
+        for (const int fd : fds)
+            ::close(fd);
+        QTest::qWait(400); // and at least one sees it gone
+    }
+
+    QCOMPARE(ctl.connectCallCount(), 1);
+    QCOMPARE(m_lastState, State::Connected);
+#endif
+}
+
 void TestQtTrustTunnelClient::fdWatchdogForcesReconnect()
 {
 #ifdef Q_OS_WIN
@@ -339,15 +487,23 @@ void TestQtTrustTunnelClient::fdWatchdogForcesReconnect()
     ctl.fireStateChanged(ctl.lastClientId(), ag::VPN_SS_CONNECTED);
     QTRY_COMPARE(m_lastState, State::Connected); // fd baseline recorded here
 
-    // Simulate a descriptor leak: grow past the 64-fd threshold and expect the
-    // watchdog (300 ms interval in tests) to force a clean reconnect.
+    // A leak: descriptors taken and never given back, held across the whole
+    // window the watchdog looks at. The threshold is scaled to the process's
+    // own limit, so it is computed here rather than written down twice.
+    struct rlimit rl {};
+    QVERIFY(::getrlimit(RLIMIT_NOFILE, &rl) == 0);
+    const int threshold = std::clamp(static_cast<int>(rl.rlim_cur) / 4, 256, 1024);
     std::vector<int> fds;
-    for (int i = 0; i < 80; ++i) {
+    for (int i = 0; i < threshold + 32; ++i) {
         const int fd = ::open("/dev/null", O_RDONLY);
         if (fd >= 0)
             fds.push_back(fd);
     }
-    QVERIFY(fds.size() > 64);
+    if (static_cast<int>(fds.size()) < threshold + 1) {
+        for (const int fd : fds)
+            ::close(fd);
+        QSKIP("cannot open enough descriptors to exceed the threshold here");
+    }
     QTRY_VERIFY_WITH_TIMEOUT(ctl.connectCallCount() >= 2, kLongWaitMs);
     for (const int fd : fds)
         ::close(fd);

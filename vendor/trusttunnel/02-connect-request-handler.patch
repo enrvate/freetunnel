@@ -1,0 +1,147 @@
+--- a/trusttunnel/include/vpn/trusttunnel/client.h
++++ b/trusttunnel/include/vpn/trusttunnel/client.h
+@@ -21,6 +21,30 @@ static constexpr std::string_view WINTUN_DLL_NAME = "wintun";
+ 
+ namespace ag {
+ 
++// Added by FreeTunnel: what a connect request tells us, digested into plain
++// values. The core's VpnConnectRequestEvent points at memory that does not
++// outlive its callback, and the decision below is taken on another thread, so
++// the wrapper copies out what a client could need rather than handing over
++// pointers that would already be dangling by the time it looks at them.
++struct VpnConnectRequestSnapshot {
++    uint64_t id = 0;        // connection id, matches VpnConnectionInfo::id
++    int proto = 0;          // IPPROTO_TCP / IPPROTO_UDP
++    int family = 0;         // AF_INET / AF_INET6, 0 if the source was absent
++    uint16_t src_port = 0;  // host byte order
++    std::string src_ip;     // presentation form, empty if the source was absent
++    std::string app_name;   // what the core already knew; empty on the TUN path
++};
++
++// Added by FreeTunnel: what the client decides about one connection.
++struct VpnConnectDecision {
++    VpnConnectAction action = VPN_CA_DEFAULT;
++    // Optional. Named here so it appears in the core's own connection log and
++    // so vpn_reset_connections() can address this app later. The wrapper keeps
++    // the string alive until the core has copied it.
++    std::string app_name;
++    int uid = -1;
++};
++
+ struct VpnCallbacks {
+     std::function<void(SocketProtectEvent *)> protect_handler;
+     std::function<void(VpnVerifyCertificateEvent *)> verify_handler;
+@@ -29,6 +53,11 @@ struct VpnCallbacks {
+     std::function<void(VpnConnectionInfoEvent *)> connection_info_handler;
+     // Added by FreeTunnel: per-connection traffic stats (upload/download deltas).
+     std::function<void(VpnTunnelConnectionStatsEvent *)> tunnel_stats_handler;
++    // Added by FreeTunnel: decide per connection whether it is tunnelled.
++    // Runs on the wrapper's extra event loop, NOT on the core's, so a handler
++    // that has to go and look something up does not stall the tunnel. It still
++    // holds up this one connection, so it must return promptly.
++    std::function<void(const VpnConnectRequestSnapshot &, VpnConnectDecision *)> connect_request_handler;
+ };
+ 
+ class TrustTunnelClient {
+--- a/trusttunnel/src/client.cpp
++++ b/trusttunnel/src/client.cpp
+@@ -1,7 +1,19 @@
++#include <cstring>
+ #include <memory>
+ #include <string>
+ #include <vector>
+ 
++// Added by FreeTunnel: the connect-request snapshot reads the source address
++// with plain POSIX/Winsock calls rather than a helper, so it keeps working
++// across upstream's dependency bumps.
++#ifdef _WIN32
++#include <ws2tcpip.h>
++#else
++#include <arpa/inet.h>
++#include <netinet/in.h>
++#include <sys/socket.h>
++#endif
++
+ #include <magic_enum/magic_enum.hpp>
+ 
+ #include "common/logger.h"
+@@ -17,6 +29,32 @@
+ 
+ namespace ag {
+ 
++// Added by FreeTunnel: digest a connect request's source address into plain
++// values the decision handler can use after this callback has returned.
++static void ft_fill_connect_snapshot(const VpnConnectRequestEvent *event, VpnConnectRequestSnapshot *out) {
++    out->id = event->id;
++    out->proto = event->proto;
++    out->app_name = safe_to_string_view(event->app_name);
++    if (event->src == nullptr) {
++        return;
++    }
++    out->family = event->src->sa_family;
++    char buf[INET6_ADDRSTRLEN] = {};
++    if (event->src->sa_family == AF_INET) {
++        const auto *in4 = (const struct sockaddr_in *) event->src;
++        out->src_port = ntohs(in4->sin_port);
++        if (inet_ntop(AF_INET, (const void *) &in4->sin_addr, buf, sizeof(buf)) != nullptr) {
++            out->src_ip = buf;
++        }
++    } else if (event->src->sa_family == AF_INET6) {
++        const auto *in6 = (const struct sockaddr_in6 *) event->src;
++        out->src_port = ntohs(in6->sin6_port);
++        if (inet_ntop(AF_INET6, (const void *) &in6->sin6_addr, buf, sizeof(buf)) != nullptr) {
++            out->src_ip = buf;
++        }
++    }
++}
++
+ TrustTunnelClient::TrustTunnelClient(TrustTunnelConfig &&config, VpnCallbacks &&callbacks)
+         : m_config(std::move(config))
+         , m_extra_loop(vpn_event_loop_create())
+@@ -510,6 +548,13 @@ void TrustTunnelClient::vpn_handler(void *, VpnEvent what, void *data) {
+         struct TaskContext {
+             VpnConnectionInfo *info;
+             Vpn *vpn;
++            // Added by FreeTunnel. The handler is copied, not referenced, so the
++            // task does not depend on the client outliving it; the decision's
++            // app_name is what info->appname points at, so it must live in the
++            // context and be freed only in finalize, after the core has copied it.
++            VpnConnectRequestSnapshot snapshot;
++            VpnConnectDecision decision;
++            std::function<void(const VpnConnectRequestSnapshot &, VpnConnectDecision *)> handler;
+         };
+         auto *task_context = new TaskContext;
+         const VpnConnectRequestEvent *event = (VpnConnectRequestEvent *) data;
+@@ -518,6 +563,9 @@ void TrustTunnelClient::vpn_handler(void *, VpnEvent what, void *data) {
+         info->appname = safe_to_string_view(event->app_name).empty() ? "trusttunnel_client" : event->app_name;
+         task_context->info = info;
+         task_context->vpn = m_vpn;
++        // Added by FreeTunnel: snapshot before the event goes out of scope.
++        ft_fill_connect_snapshot(event, &task_context->snapshot);
++        task_context->handler = m_callbacks.connect_request_handler;
+         vpn_event_loop_submit(m_extra_loop.get(),
+                 {
+                         .arg = (void *) task_context,
+@@ -525,6 +573,22 @@ void TrustTunnelClient::vpn_handler(void *, VpnEvent what, void *data) {
+                                 [](void *arg, TaskId) {
+                                     auto *context = (TaskContext *) arg;
+                                     auto *info = context->info;
++                                    // Added by FreeTunnel: ask the client what to do
++                                    // with this connection before completing it.
++                                    if (context->handler) {
++                                        context->handler(context->snapshot, &context->decision);
++                                        info->action = context->decision.action;
++                                        if (!context->decision.app_name.empty()) {
++                                            info->appname = context->decision.app_name.c_str();
++                                        }
++                                        // Only when the handler actually named one:
++                                        // the core treats -1 as "every connection" in
++                                        // vpn_reset_connections, and the default here
++                                        // must stay what it was without a handler.
++                                        if (context->decision.uid >= 0) {
++                                            info->uid = context->decision.uid;
++                                        }
++                                    }
+                                     if (context->vpn) {
+                                         vpn_complete_connect_request(context->vpn, info);
+                                     }

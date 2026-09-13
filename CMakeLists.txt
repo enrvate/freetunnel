@@ -97,6 +97,9 @@ add_executable(FreeTunnel WIN32 MACOSX_BUNDLE
     include/app/Backend.h
     src/core/AppSettings.cpp
     include/core/AppSettings.h
+    src/core/AppRules.cpp
+    src/core/AppShortcut.cpp
+    src/core/InstalledApps.cpp
     src/core/BypassRules.cpp
     include/core/BypassRules.h
     src/core/ConfigStore.cpp
@@ -115,6 +118,7 @@ add_executable(FreeTunnel WIN32 MACOSX_BUNDLE
     src/core/ConfigToml.cpp
     include/core/ConfigToml.h
     src/core/NetBind.cpp
+    src/core/ProcessLookup.cpp
     include/core/NetBind.h
     src/core/AppUiUtils.cpp
     include/core/AppUiUtils.h
@@ -252,7 +256,10 @@ if (WIN32)
     # The GUI runs as the normal user (asInvoker, the default). Only the helper
     # process is elevated on demand via ShellExecuteEx "runas", which needs
     # shell32 for ShellExecuteExW.
-    target_link_libraries(FreeTunnel PRIVATE shell32)
+    # iphlpapi: GetExtendedTcpTable/GetExtendedUdpTable, which is how per-app
+    # split tunnelling finds the process behind a connection on Windows.
+    # ole32/uuid: IShellLink, which is how a dropped .lnk is followed to its target.
+    target_link_libraries(FreeTunnel PRIVATE shell32 iphlpapi ole32 uuid)
 endif()
 
 # OpenSSL for in-app Ed25519 verification (UpdateChecker). On Linux the VPN

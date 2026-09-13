@@ -9,6 +9,45 @@
     </message>
 </context>
 <context>
+    <name>AppPickerOverlay</name>
+    <message>
+        <source>Add an application</source>
+        <translation>Добавить приложение</translation>
+    </message>
+    <message>
+        <source>Search</source>
+        <translation>Поиск</translation>
+    </message>
+    <message>
+        <source>No installed applications were found. Choose a file instead.</source>
+        <translation>Установленные приложения не найдены. Выберите файл.</translation>
+    </message>
+    <message>
+        <source>Nothing matches that.</source>
+        <translation>Ничего не найдено.</translation>
+    </message>
+    <message>
+        <source>Choose a file instead…</source>
+        <translation>Выбрать файл…</translation>
+    </message>
+    <message>
+        <source>Choose an application</source>
+        <translation>Выберите приложение</translation>
+    </message>
+    <message>
+        <source>Programs and shortcuts (*.exe *.lnk)</source>
+        <translation>Программы и ярлыки (*.exe *.lnk)</translation>
+    </message>
+    <message>
+        <source>All files (*)</source>
+        <translation>Все файлы (*)</translation>
+    </message>
+    <message>
+        <source>Applications (*.desktop *.app)</source>
+        <translation>Приложения (*.desktop *.app)</translation>
+    </message>
+</context>
+<context>
     <name>Backend</name>
     <message>
         <source>FreeTunnel %1 started</source>
@@ -229,6 +268,14 @@
     <message>
         <source>Update downloaded — closing FreeTunnel to install it</source>
         <translation>Обновление загружено — закрываем FreeTunnel для установки</translation>
+    </message>
+    <message>
+        <source>Enter a program name (firefox) or the full path to one</source>
+        <translation>Введите имя программы (firefox) или полный путь к ней</translation>
+    </message>
+    <message>
+        <source>That is not a program. Drop an application here, or pick one with Choose…</source>
+        <translation>Это не программа. Перетащите приложение сюда или выберите через «Выбрать…»</translation>
     </message>
 </context>
 <context>
@@ -742,6 +789,30 @@
     <message>
         <source>Add a rule to use &quot;Through VPN&quot; — with an empty list nothing would go through the tunnel, so the full tunnel stays on.</source>
         <translation>Добавьте правило, чтобы режим «Через VPN» заработал: с пустым списком через туннель не пойдёт ничего, поэтому остаётся полный туннель.</translation>
+    </message>
+    <message>
+        <source>Applications — via VPN</source>
+        <translation>Приложения — через VPN</translation>
+    </message>
+    <message>
+        <source>Applications — bypass VPN</source>
+        <translation>Приложения — в обход VPN</translation>
+    </message>
+    <message>
+        <source>Choose…</source>
+        <translation>Выбрать…</translation>
+    </message>
+    <message>
+        <source>Clear all applications?</source>
+        <translation>Очистить список приложений?</translation>
+    </message>
+    <message>
+        <source>Drop to add this application</source>
+        <translation>Отпустите, чтобы добавить это приложение</translation>
+    </message>
+    <message>
+        <source>Drop an application here, or paste its full path</source>
+        <translation>Перетащите приложение сюда или вставьте полный путь</translation>
     </message>
 </context>
 <context>

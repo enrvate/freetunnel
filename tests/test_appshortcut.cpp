@@ -11,6 +11,21 @@
 
 #include "core/AppShortcut.h"
 
+
+namespace {
+
+// Rules are stored canonically — that is the whole point of the change these
+// tests cover — and on macOS a temporary directory sits under /var, which is a
+// symlink to /private/var. Comparing against the raw path would fail there for
+// a reason that has nothing to do with what is being tested.
+QString expectedRule(const QString &path)
+{
+    const QString canonical = QFileInfo(path).canonicalFilePath();
+    return QDir::toNativeSeparators(canonical.isEmpty() ? path : canonical);
+}
+
+} // namespace
+
 class TestAppShortcut : public QObject {
     Q_OBJECT
 
@@ -106,7 +121,7 @@ void TestAppShortcut::aDroppedDesktopFileResolvesToItsProgram()
                     .toUtf8());
     f.close();
 
-    QCOMPARE(freetunnel::resolveApplicationTarget(entry), QDir::toNativeSeparators(program));
+    QCOMPARE(freetunnel::resolveApplicationTarget(entry), expectedRule(program));
 }
 
 void TestAppShortcut::aDroppedProgramResolvesToItself()
@@ -118,7 +133,7 @@ void TestAppShortcut::aDroppedProgramResolvesToItself()
     QVERIFY(bin.open(QIODevice::WriteOnly));
     bin.close();
 
-    QCOMPARE(freetunnel::resolveApplicationTarget(program), QDir::toNativeSeparators(program));
+    QCOMPARE(freetunnel::resolveApplicationTarget(program), expectedRule(program));
 }
 
 // Built and tested everywhere, not only on macOS: a person can drop a bundle
@@ -135,7 +150,7 @@ void TestAppShortcut::aMacBundleResolvesToTheProgramInside()
     QVERIFY(bin.open(QIODevice::WriteOnly));
     bin.close();
 
-    QCOMPARE(freetunnel::resolveApplicationTarget(bundle), QDir::toNativeSeparators(inner));
+    QCOMPARE(freetunnel::resolveApplicationTarget(bundle), expectedRule(inner));
 }
 
 // A document, a folder, a shortcut pointing at something that is gone. Each has
@@ -177,7 +192,7 @@ void TestAppShortcut::acceptsAFileUrlAsWellAsAPath()
     bin.close();
 
     QCOMPARE(freetunnel::resolveApplicationTarget(QUrl::fromLocalFile(program).toString()),
-             QDir::toNativeSeparators(program));
+             expectedRule(program));
 }
 
 void TestAppShortcut::aSandboxedAppResolvesToItsOwnNameNotTheLauncher_data()
@@ -246,7 +261,7 @@ void TestAppShortcut::aBundleDraggedFromFinderCarriesATrailingSlash()
     QFile bin(inner);
     QVERIFY(bin.open(QIODevice::WriteOnly));
     bin.close();
-    const QString expected = QDir::toNativeSeparators(inner);
+    const QString expected = expectedRule(inner);
 
     QCOMPARE(freetunnel::resolveApplicationTarget(bundle), expected);
     QCOMPARE(freetunnel::resolveApplicationTarget(bundle + QStringLiteral("/")), expected);
@@ -282,7 +297,7 @@ void TestAppShortcut::aBundleDeclaresItsOwnExecutableName()
     plist.close();
 
     QCOMPARE(freetunnel::resolveApplicationTarget(bundle),
-             QDir::toNativeSeparators(bundle + QStringLiteral("/Contents/MacOS/Electron")));
+             expectedRule(bundle + QStringLiteral("/Contents/MacOS/Electron")));
 }
 
 // /usr/bin/<program> is routinely a symlink into /usr/lib or /opt, and
@@ -298,11 +313,14 @@ void TestAppShortcut::aSymlinkedProgramIsStoredAsWhatTheKernelWillReport()
     QVERIFY(bin.open(QIODevice::WriteOnly));
     bin.close();
 
+#ifdef Q_OS_WIN
+    QSKIP("QFile::link writes a .lnk shortcut here, which is a different mechanism");
+#else
     const QString link = dir.filePath(QStringLiteral("linked-program"));
     if (!QFile::link(real, link))
         QSKIP("this filesystem does not support symlinks");
 
-    const QString expected = QDir::toNativeSeparators(QFileInfo(real).canonicalFilePath());
+    const QString expected = expectedRule(real);
     QCOMPARE(freetunnel::resolveApplicationTarget(link), expected);
 
     // And through a .desktop entry, which is how the picker gets there.
@@ -313,6 +331,7 @@ void TestAppShortcut::aSymlinkedProgramIsStoredAsWhatTheKernelWillReport()
                     .arg(link).toUtf8());
     f.close();
     QCOMPARE(freetunnel::resolveApplicationTarget(entry), expected);
+#endif
 }
 
 QTEST_MAIN(TestAppShortcut)

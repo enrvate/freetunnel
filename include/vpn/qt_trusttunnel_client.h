@@ -2,6 +2,7 @@
 #pragma once
 #include <QObject>
 #include <QString>
+#include <QList>
 #include <QStringList>
 #include <QTimer>
 #include <QThread>
@@ -208,6 +209,19 @@ private:
     QTimer m_reconnectTimer;
     QTimer m_fdWatchdogTimer;
     int m_fdBaseline = -1; // open fd count right after connect (for leak detection)
+    // The last few counts. What distinguishes a leak from load is not the peak
+    // but whether the count ever comes back down: a leak never gives its
+    // descriptors back, so even the LOWEST reading in a recent window keeps
+    // climbing, while load pushes the peak up and lets it fall again.
+    //
+    // Comparing the current count to the connect-time baseline could not tell
+    // those apart, and per-application split tunnelling turned that from a
+    // theoretical flaw into a daily false alarm: a program routed around the
+    // tunnel opens its connections directly from this process, so a browser on
+    // the bypass list legitimately holds dozens of sockets here — and the user
+    // was told the connection was using an unusual number of system resources
+    // for working exactly as asked.
+    QList<int> m_fdSamples;
     QTimer m_networkWaitTimer;   // fires if we stay in WaitingForNetwork too long
     QTimer *m_coreLogPoll = nullptr;
     // Heap-allocated and unparented on purpose: a connect attempt stuck inside

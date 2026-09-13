@@ -2,6 +2,8 @@
 #include "core/ProcessLookup.h"
 
 #include <QDir>
+
+#include <algorithm>
 #include <QtGlobal>
 
 #include <cerrno>
@@ -130,6 +132,19 @@ ProcessLookup::ProcessLookup(std::chrono::milliseconds ttl)
 {
 }
 
+// How long a built table is trusted without asking again. Derived from what the
+// last walk actually cost rather than fixed, because the fixed number was wrong
+// by two orders of magnitude on a real machine: the walk takes about 4 ms there,
+// and it was being trusted for 1500. Twenty times the cost holds the steady
+// state at about five per cent of one core.
+std::chrono::milliseconds ProcessLookup::currentTtl() const
+{
+    if (m_report.elapsedMs <= 0)
+        return m_ttl;
+    const auto derived = std::chrono::milliseconds(m_report.elapsedMs * 20);
+    return std::clamp(derived, std::chrono::milliseconds(100), m_ttl);
+}
+
 void ProcessLookup::finishScan(std::chrono::steady_clock::time_point startedAt, bool ok)
 {
     const auto done = std::chrono::steady_clock::now();
@@ -189,7 +204,7 @@ void collectWindowsTable(QHash<std::uint32_t, qint64> *owners, ULONG af, int pro
 void ProcessLookup::refreshIfStale()
 {
     const auto now = std::chrono::steady_clock::now();
-    if (m_everBuilt && now - m_builtAt < m_ttl)
+    if (m_everBuilt && now - m_builtAt < currentTtl())
         return;
     m_owners.clear();
     m_identities.clear();
@@ -235,7 +250,7 @@ void ProcessLookup::refreshIfStale()
 void ProcessLookup::refreshIfStale()
 {
     const auto now = std::chrono::steady_clock::now();
-    if (m_everBuilt && now - m_builtAt < m_ttl)
+    if (m_everBuilt && now - m_builtAt < currentTtl())
         return;
     m_owners.clear();
     m_identities.clear();
@@ -385,7 +400,7 @@ QHash<std::uint64_t, qint64> socketInodeOwners(ProcessLookup::ScanReport *report
 void ProcessLookup::refreshIfStale()
 {
     const auto now = std::chrono::steady_clock::now();
-    if (m_everBuilt && now - m_builtAt < m_ttl)
+    if (m_everBuilt && now - m_builtAt < currentTtl())
         return;
     m_owners.clear();
     m_identities.clear();
@@ -434,19 +449,29 @@ AppIdentity ProcessLookup::resolve(const LocalFlow &flow)
 
     auto owner = m_owners.constFind(ownerKey(flow.proto, flow.port));
     if (owner == m_owners.constEnd()) {
-        // A socket opened since the last refresh is the common miss, and it is
-        // the one a user is most likely to be watching — a program's very first
-        // connection after launch. So a miss buys one rebuild.
+        // A socket opened since the last walk is the common miss, and it is the
+        // one that matters most: a browser opening a page makes its first
+        // connection immediately, and that connection is the one a person is
+        // watching. Reported from a Mac — the first request to a site went
+        // through the tunnel and the next three bypassed it, one second apart.
         //
-        // But only one per kMinRebuild: misses are not rare. Sockets we can
-        // never attribute (other users' processes, the kernel's own) would
-        // otherwise force a full rescan on every single connection, which on
-        // Linux means walking every file descriptor of every process while a
-        // connection waits on the answer.
+        // So a miss buys a rebuild, throttled by what a rebuild actually costs
+        // on this machine rather than by a number picked in advance. Four times
+        // the last walk's duration bounds this at a fifth of one core even if
+        // every connection misses, and on a machine where the walk takes a few
+        // milliseconds it is nearly no throttle at all — which is the case that
+        // was losing connections. The floor keeps a suspiciously fast walk from
+        // turning into a spin.
         const auto now = std::chrono::steady_clock::now();
-        static constexpr auto kMinRebuild = std::chrono::milliseconds(250);
-        if (m_everBuilt && now - m_builtAt >= kMinRebuild) {
-            invalidate();
+        const auto cost = std::chrono::milliseconds(std::max<qint64>(m_report.elapsedMs, 0));
+        const auto minRebuild = std::max(std::chrono::milliseconds(20), cost * 4);
+        if (m_everBuilt && now - m_builtAt >= minRebuild) {
+            // Only the port table is dropped. The pid -> executable map is still
+            // valid — processes do not change their binary — and rebuilding it
+            // would mean reading /proc or calling proc_pidpath again for every
+            // program we had already identified.
+            m_owners.clear();
+            m_everBuilt = false;
             refreshIfStale();
             owner = m_owners.constFind(ownerKey(flow.proto, flow.port));
         }

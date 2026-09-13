@@ -656,6 +656,7 @@ void QtTrustTunnelClient::handleCoreConnected()
     m_networkWaitTimer.stop();
     m_everConnected = true;
     m_fdBaseline = countOpenFds();
+    m_fdSamples.clear();
     setState(State::Connected);
     emit vpnConnected();
 }

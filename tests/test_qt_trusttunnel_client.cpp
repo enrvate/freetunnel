@@ -13,6 +13,7 @@
 #include <winsock2.h>
 #else
 #include <netinet/in.h>
+#include <sys/resource.h>
 #include <sys/socket.h>
 #endif
 
@@ -95,6 +96,7 @@ private slots:
     void disconnectWhileConnectStuckAbandonsAttempt();
     void networkWaitTimeoutForcesReconnect();
     void fdWatchdogForcesReconnect();
+    void fdWatchdogIgnoresTrafficThatComesBackDown();
     void killSwitchKeepsTheClientAliveWhileWaitingForNetwork();
     void malformedConfigReportsErrorAndDoesNotConnect();
     void structurallyInvalidConfigReportsError();
@@ -426,6 +428,53 @@ void TestQtTrustTunnelClient::killSwitchKeepsTheClientAliveWhileWaitingForNetwor
     QTRY_COMPARE(m_lastState, State::Connected);
 }
 
+// The regression that made this worth changing. A program routed around the
+// tunnel opens its connections directly from this process, so a browser on the
+// bypass list holds many sockets here — and the old check, which compared the
+// current count to the count at connect, called that a leak and told the user
+// their connection was "using an unusual number of system resources". Load that
+// comes back down must be left alone.
+void TestQtTrustTunnelClient::fdWatchdogIgnoresTrafficThatComesBackDown()
+{
+#ifdef Q_OS_WIN
+    QSKIP("fd counting is not supported on Windows — the watchdog is inert there");
+#else
+    auto &ctl = mockcore::Controller::instance();
+
+    beginConnect();
+    QTRY_VERIFY(ctl.connectCallCount() >= 1);
+    ctl.fireStateChanged(ctl.lastClientId(), ag::VPN_SS_CONNECTED);
+    QTRY_COMPARE(m_lastState, State::Connected);
+
+    struct rlimit rl {};
+    QVERIFY(::getrlimit(RLIMIT_NOFILE, &rl) == 0);
+    const int threshold = std::clamp(static_cast<int>(rl.rlim_cur) / 4, 256, 1024);
+
+    // Three bursts well past the threshold, each released before the next —
+    // exactly the shape of a browser loading pages.
+    for (int round = 0; round < 3; ++round) {
+        std::vector<int> fds;
+        for (int i = 0; i < threshold + 32; ++i) {
+            const int fd = ::open("/dev/null", O_RDONLY);
+            if (fd >= 0)
+                fds.push_back(fd);
+        }
+        if (static_cast<int>(fds.size()) < threshold + 1) {
+            for (const int fd : fds)
+                ::close(fd);
+            QSKIP("cannot open enough descriptors to make this meaningful here");
+        }
+        QTest::qWait(400); // at least one watchdog check sees the peak
+        for (const int fd : fds)
+            ::close(fd);
+        QTest::qWait(400); // and at least one sees it gone
+    }
+
+    QCOMPARE(ctl.connectCallCount(), 1);
+    QCOMPARE(m_lastState, State::Connected);
+#endif
+}
+
 void TestQtTrustTunnelClient::fdWatchdogForcesReconnect()
 {
 #ifdef Q_OS_WIN
@@ -438,15 +487,23 @@ void TestQtTrustTunnelClient::fdWatchdogForcesReconnect()
     ctl.fireStateChanged(ctl.lastClientId(), ag::VPN_SS_CONNECTED);
     QTRY_COMPARE(m_lastState, State::Connected); // fd baseline recorded here
 
-    // Simulate a descriptor leak: grow past the 64-fd threshold and expect the
-    // watchdog (300 ms interval in tests) to force a clean reconnect.
+    // A leak: descriptors taken and never given back, held across the whole
+    // window the watchdog looks at. The threshold is scaled to the process's
+    // own limit, so it is computed here rather than written down twice.
+    struct rlimit rl {};
+    QVERIFY(::getrlimit(RLIMIT_NOFILE, &rl) == 0);
+    const int threshold = std::clamp(static_cast<int>(rl.rlim_cur) / 4, 256, 1024);
     std::vector<int> fds;
-    for (int i = 0; i < 80; ++i) {
+    for (int i = 0; i < threshold + 32; ++i) {
         const int fd = ::open("/dev/null", O_RDONLY);
         if (fd >= 0)
             fds.push_back(fd);
     }
-    QVERIFY(fds.size() > 64);
+    if (static_cast<int>(fds.size()) < threshold + 1) {
+        for (const int fd : fds)
+            ::close(fd);
+        QSKIP("cannot open enough descriptors to exceed the threshold here");
+    }
     QTRY_VERIFY_WITH_TIMEOUT(ctl.connectCallCount() >= 2, kLongWaitMs);
     for (const int fd : fds)
         ::close(fd);

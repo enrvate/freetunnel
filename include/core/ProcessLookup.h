@@ -97,6 +97,8 @@ private:
 
     // Fills the parts of the report every platform can answer, and stamps the
     // table as ready. Called at the end of each platform's walk.
+    // How long the built table is trusted, derived from what building it cost.
+    std::chrono::milliseconds currentTtl() const;
     void finishScan(std::chrono::steady_clock::time_point startedAt, bool ok);
 };
 

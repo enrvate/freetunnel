@@ -11,6 +11,7 @@
 #include <QSignalSpy>
 #include <QStandardPaths>
 #include <QDir>
+#include <QFileInfo>
 #include <QTemporaryDir>
 #include <QUrl>
 
@@ -367,7 +368,11 @@ void TestBackendSplit::aDroppedShortcutBecomesARuleForTheProgramItNames()
     // The URL form, because that is what a drop hands over.
     QVERIFY(backend.addApplicationFromPath(QUrl::fromLocalFile(entry).toString()));
     QCOMPARE(backend.appRules().size(), 1);
-    QCOMPARE(backend.appRules().first(), QDir::toNativeSeparators(program));
+    // Canonical, because that is how rules are stored — and on macOS a temporary
+    // directory is reached through /var, which is a symlink to /private/var.
+    const QString canonical = QFileInfo(program).canonicalFilePath();
+    QCOMPARE(backend.appRules().first(),
+             QDir::toNativeSeparators(canonical.isEmpty() ? program : canonical));
     QCOMPARE(errors.count(), 0);
 
     // A folder or a document landing on the window by accident is told apart from

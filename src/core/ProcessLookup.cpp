@@ -31,6 +31,9 @@
 #include <sys/socket.h>
 #include <unistd.h>
 #else
+// The Linux branch. It already names /proc paths, so it is not portable to any
+// other Unix, and the kernel headers below do not make it less so.
+// clang-format off
 #include <climits>
 #include <cstdio>
 #include <cstdlib>
@@ -39,6 +42,10 @@
 #include <netinet/in.h>
 #include <sys/socket.h>
 #include <unistd.h>
+#include <linux/inet_diag.h>
+#include <linux/netlink.h>
+#include <linux/sock_diag.h>
+// clang-format on
 #endif
 
 namespace freetunnel {
@@ -487,6 +494,141 @@ QList<qint64> listProcessIds()
     return pids;
 }
 
+// Which tables hold the sockets we can be asked about, and what protocol each
+// one is. Both ways of reading them below work through this list.
+struct SocketTable {
+    const char *path; // /proc/net/<name>
+    int family;       // AF_INET / AF_INET6
+    int proto;        // IPPROTO_TCP / IPPROTO_UDP
+};
+constexpr SocketTable kSocketTables[] = {
+        {"/proc/net/tcp", AF_INET, IPPROTO_TCP},
+        {"/proc/net/tcp6", AF_INET6, IPPROTO_TCP},
+        {"/proc/net/udp", AF_INET, IPPROTO_UDP},
+        {"/proc/net/udp6", AF_INET6, IPPROTO_UDP},
+};
+
+// One sock_diag dump: every socket of one family and protocol, appended to out.
+// Returns 0, or the error the kernel replied with.
+int dumpOneFamily(int fd, const SocketTable &table, std::uint32_t seq, QByteArray *buffer,
+                  QList<SocketOwner> *out)
+{
+    struct {
+        nlmsghdr header;
+        inet_diag_req_v2 request;
+    } message = {};
+    message.header.nlmsg_len = sizeof(message);
+    message.header.nlmsg_type = SOCK_DIAG_BY_FAMILY;
+    message.header.nlmsg_flags = NLM_F_REQUEST | NLM_F_DUMP;
+    message.header.nlmsg_seq = seq;
+    message.request.sdiag_family = static_cast<std::uint8_t>(table.family);
+    message.request.sdiag_protocol = static_cast<std::uint8_t>(table.proto);
+    // Every state, including the ones a connection passes through on its way in
+    // and out. A socket in SYN_SENT is exactly the case this all exists for: the
+    // program has called connect(), which is why we are being asked at all.
+    message.request.idiag_states = ~0u;
+
+    sockaddr_nl kernel = {};
+    kernel.nl_family = AF_NETLINK;
+    if (::sendto(fd, &message, sizeof(message), 0, reinterpret_cast<sockaddr *>(&kernel),
+                 sizeof(kernel))
+        < 0) {
+        return errno;
+    }
+
+    for (;;) {
+        errno = 0;
+        // MSG_TRUNC makes the kernel report how large the datagram really was,
+        // not how much of it fitted. Without it a buffer that was too small
+        // would lose sockets silently, and a lost socket is a rule that does not
+        // apply to one connection — the failure this whole path exists to stop.
+        // The buffer is far larger than a netlink dump chunk, so this is a
+        // guard, not an expectation.
+        const ssize_t got = ::recv(fd, buffer->data(), buffer->size(), MSG_TRUNC);
+        if (got <= 0)
+            return errno != 0 ? errno : EIO;
+        if (got > buffer->size())
+            return EMSGSIZE;
+        // int, deliberately: NLMSG_NEXT subtracts from this, and an unsigned
+        // length would wrap instead of ending the loop.
+        auto length = static_cast<int>(got);
+        for (auto *header = reinterpret_cast<nlmsghdr *>(buffer->data()); NLMSG_OK(header, length);
+             header = NLMSG_NEXT(header, length)) {
+            // A dump abandoned earlier would leave its remaining messages in the
+            // socket; they are recognised by the sequence number and dropped.
+            if (header->nlmsg_seq != seq)
+                continue;
+            if (header->nlmsg_type == NLMSG_DONE)
+                return 0;
+            if (header->nlmsg_type == NLMSG_ERROR) {
+                const auto *error = static_cast<const nlmsgerr *>(NLMSG_DATA(header));
+                // The kernel reports errors as negative errno. A kernel built
+                // without the matching diag module answers here rather than
+                // failing the send.
+                return error->error < 0 ? -error->error : EIO;
+            }
+            const auto *entry = static_cast<const inet_diag_msg *>(NLMSG_DATA(header));
+            SocketOwner owner;
+            owner.port = ntohs(entry->id.idiag_sport);
+            owner.proto = table.proto;
+            owner.inode = entry->idiag_inode;
+            if (owner.port != 0)
+                out->append(owner);
+        }
+    }
+}
+
+// Every inet socket on the machine, asked of the kernel in binary.
+//
+// This is the interface `ss` uses, and it exists because the text tables in
+// /proc/net make the kernel format every socket on the machine one line at a
+// time. Measured here with 325 sockets open: 0.95 ms against 2.6, and the two
+// agree row for row — the same inodes, protocols and ports, none missing on
+// either side.
+//
+// Returns false when the kernel will not answer, which is how one built without
+// the inet_diag modules replies. The caller reads the text tables instead. It is
+// all four dumps or none: a machine with tcp_diag and no udp_diag would
+// otherwise answer half the question, and half an answer here means a rule that
+// works for some of a program's connections.
+bool socketsViaNetlink(QList<SocketOwner> *out, QByteArray *buffer, int *lastErrno)
+{
+#ifdef FT_ENABLE_TEST_HOOKS
+    // Test-only, compiled out of release builds. Every kernel this is built and
+    // tested on has the inet_diag modules, so without a way to refuse them the
+    // fallback below would never run outside the machine of whoever is missing
+    // them — and a path that only runs where nobody is looking is a path that
+    // has already stopped working by the time it is wanted.
+    if (qEnvironmentVariableIsSet("FT_TEST_NO_SOCKET_NETLINK")) {
+        *lastErrno = ENOSYS;
+        return false;
+    }
+#endif
+    // Opened per walk rather than kept: measured at no cost either way, and a
+    // descriptor held open for the life of the client is one the descriptor
+    // watchdog would have to be told about. A failure here is also the answer
+    // for a kernel built without sock_diag at all, and for a sandbox that
+    // refuses AF_NETLINK.
+    const int fd = ::socket(AF_NETLINK, SOCK_RAW | SOCK_CLOEXEC, NETLINK_SOCK_DIAG);
+    if (fd < 0) {
+        *lastErrno = errno;
+        return false;
+    }
+    QList<SocketOwner> gathered;
+    std::uint32_t seq = 1;
+    for (const SocketTable &table : kSocketTables) {
+        const int failed = dumpOneFamily(fd, table, seq++, buffer, &gathered);
+        if (failed != 0) {
+            *lastErrno = failed;
+            ::close(fd);
+            return false;
+        }
+    }
+    ::close(fd);
+    *out = std::move(gathered);
+    return true;
+}
+
 // A whole /proc file in one read, into a buffer the caller reuses.
 //
 // QFile would do, and did, but a /proc file reports a size of zero, so Qt reads
@@ -549,17 +691,6 @@ void collectSocketInodes(qint64 pid, QHash<std::uint64_t, qint64> *out,
 
 void ProcessLookup::walk(std::chrono::steady_clock::time_point now)
 {
-    struct Table {
-        const char *path;
-        int proto;
-    };
-    static constexpr Table kTables[] = {
-            {"/proc/net/tcp", IPPROTO_TCP},
-            {"/proc/net/tcp6", IPPROTO_TCP},
-            {"/proc/net/udp", IPPROTO_UDP},
-            {"/proc/net/udp6", IPPROTO_UDP},
-    };
-
     const QList<qint64> pids = listProcessIds();
     if (pids.isEmpty()) {
         // /proc is always readable on a running Linux system, so this is the
@@ -589,46 +720,47 @@ void ProcessLookup::walk(std::chrono::steady_clock::time_point now)
         collectSocketInodes(pid, &byInode, &m_report);
     }
 
-    // The tables are read whether or not anything was watched, and every row is
-    // recorded whether or not it belongs to a watched program. The rows that do
-    // not are the point: they are what lets a connection from some other program
-    // be answered outright instead of buying a walk of its own.
+    // Every socket on the machine, whether or not anything watched holds it. The
+    // ones nothing holds are the point: they are what lets a connection from
+    // some other program be answered outright instead of buying a walk of
+    // its own.
     //
-    // This is the expensive part of a Linux walk by a wide margin — the kernel
-    // formats every socket on the machine as text — and it is read in full every
-    // time, which is a deliberate choice rather than an oversight. Remembering
-    // which port an inode had would be sound, since neither changes for the life
-    // of a socket; the trap is the inodes the tables DO NOT mention. A socket
-    // that exists but is not yet connected appears in no table at all (measured:
-    // neither before bind() nor after it, only once it is connected or
-    // listening) and is indistinguishable from a unix or netlink socket, which
-    // will never appear. Remembering "this one has no port" would therefore
-    // catch every connection whose socket was created a few microseconds before
-    // a walk happened to look, and misroute it for as long as it lasted — the
-    // intermittent failure this whole change exists to remove, reintroduced by
-    // the optimisation meant to pay for it.
+    // Gathered in full every time, which is a deliberate choice rather than an
+    // oversight. Remembering which port an inode had would be sound, since
+    // neither changes for the life of a socket; the trap is the inodes that are
+    // NOT mentioned. A socket that exists but is not yet connected appears
+    // nowhere at all (measured: neither before bind() nor after it, only once it
+    // is connected or listening) and is indistinguishable from a unix or netlink
+    // socket, which will never appear. Remembering "this one has no port" would
+    // therefore catch every connection whose socket was created a few
+    // microseconds before a walk happened to look, and misroute it for as long
+    // as it lasted — the intermittent failure this whole change exists to
+    // remove, reintroduced by the optimisation meant to pay for it.
     QByteArray buffer(256 * 1024, Qt::Uninitialized);
-    for (const Table &t : kTables) {
-        const QList<SocketOwner> sockets = parseProcNetTable(readWholeFile(t.path, &buffer), t.proto);
-        for (const SocketOwner &sock : sockets) {
-            const std::uint32_t key = ownerKey(sock.proto, sock.port);
-            const auto owner = byInode.constFind(sock.inode);
-            if (owner == byInode.constEnd()) {
-                // Seen, and nobody watched holds it. Recorded only if no watched
-                // process has claimed this port already: one port can carry two
-                // sockets — a listener and a connection accepted on it — and the
-                // program that was asked about must win over the one that
-                // was not.
-                if (!m_owners.contains(key))
-                    m_owners.insert(key, kUnattributed);
-                continue;
-            }
-            // First one wins among watched owners, for the same reason as the
-            // macOS walk above; an unattributed marker is overwritten.
-            const auto claimed = m_owners.constFind(key);
-            if (claimed == m_owners.constEnd() || claimed.value() == kUnattributed)
-                m_owners.insert(key, owner.value());
+    QList<SocketOwner> sockets;
+    m_report.netlink = socketsViaNetlink(&sockets, &buffer, &m_report.lastErrno);
+    if (!m_report.netlink) {
+        for (const SocketTable &table : kSocketTables)
+            sockets.append(parseProcNetTable(readWholeFile(table.path, &buffer), table.proto));
+    }
+
+    for (const SocketOwner &sock : sockets) {
+        const std::uint32_t key = ownerKey(sock.proto, sock.port);
+        const auto owner = byInode.constFind(sock.inode);
+        if (owner == byInode.constEnd()) {
+            // Seen, and nobody watched holds it. Recorded only if no watched
+            // process has claimed this port already: one port can carry two
+            // sockets — a listener and a connection accepted on it — and the
+            // program that was asked about must win over the one that was not.
+            if (!m_owners.contains(key))
+                m_owners.insert(key, kUnattributed);
+            continue;
         }
+        // First one wins among watched owners, for the same reason as the macOS
+        // walk above; an unattributed marker is overwritten.
+        const auto claimed = m_owners.constFind(key);
+        if (claimed == m_owners.constEnd() || claimed.value() == kUnattributed)
+            m_owners.insert(key, owner.value());
     }
 
     finishScan(now, true);

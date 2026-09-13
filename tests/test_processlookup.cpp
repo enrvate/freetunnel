@@ -57,6 +57,7 @@ private slots:
     void withNoRulesNothingIsWalkedAtAll();
     void connectionsFromUnnamedProgramsDoNotEachBuyAWalk();
     void aBurstFromTheWatchedProgramSharesOneWalk();
+    void bothWaysOfReadingTheSocketTablesAgree();
 };
 
 // The whole chain, on the real operating system: a socket exists, therefore the
@@ -385,6 +386,62 @@ void TestProcessLookup::withNoRulesNothingIsWalkedAtAll()
             lookup.resolve(LocalFlow{AF_INET, IPPROTO_TCP, server.serverPort(), QString()});
     QVERIFY(id.executablePath.isEmpty());
     QVERIFY2(!lookup.lastScan().ok, "no rules, so nothing was walked");
+}
+
+// The kernel is asked for its open sockets in binary, through the same netlink
+// interface `ss` uses, and read back as text from /proc/net only where that is
+// refused — a kernel built without the inet_diag modules. Both are live code,
+// and the text one runs on no machine this is developed or tested on, which is
+// exactly how a fallback rots unnoticed until the day it is needed.
+//
+// So it is run here, against the same question, and the two must agree. They
+// were measured to agree row for row — same inodes, protocols and ports — but
+// that was measured once, by hand; this is the part that keeps being true.
+void TestProcessLookup::bothWaysOfReadingTheSocketTablesAgree()
+{
+#ifndef Q_OS_LINUX
+    QSKIP("only Linux has two ways of reading them");
+#else
+    QTcpServer server;
+    QVERIFY(server.listen(QHostAddress::LocalHost, 0));
+    const LocalFlow flow{AF_INET, IPPROTO_TCP, server.serverPort(), QString()};
+
+    ProcessLookup viaNetlink;
+    viaNetlink.setWatchList(watchSelf());
+    const AppIdentity fromNetlink = viaNetlink.resolve(flow);
+    const ProcessLookup::ScanReport netlinkScan = viaNetlink.lastScan();
+
+    // Everything that depends on the environment happens between these two
+    // lines, and the assertions come after it is restored: a QVERIFY that fails
+    // inside would otherwise leave every later test reading the text tables.
+    qputenv("FT_TEST_NO_SOCKET_NETLINK", "1");
+    ProcessLookup viaProcNet;
+    viaProcNet.setWatchList(watchSelf());
+    const AppIdentity fromProcNet = viaProcNet.resolve(flow);
+    const ProcessLookup::ScanReport procScan = viaProcNet.lastScan();
+
+    // And the other half of the answer, which decides most connections: ports
+    // that are open and belong to nobody named must be recorded by this path
+    // too, or every such connection would buy a walk of its own.
+    ProcessLookup unnamed;
+    unnamed.setWatchList({QStringLiteral("a-program-that-is-not-running")});
+    unnamed.resolve(flow);
+    const qint64 walksBefore = unnamed.walksTaken();
+    for (int i = 0; i < 5; ++i)
+        unnamed.resolve(flow);
+    const qint64 unnamedWalks = unnamed.walksTaken() - walksBefore;
+    qunsetenv("FT_TEST_NO_SOCKET_NETLINK");
+
+    QVERIFY2(netlinkScan.netlink, "this kernel answers sock_diag, so that is what should be used");
+    QVERIFY2(!procScan.netlink, "the hook must actually have forced the text tables");
+    QVERIFY2(procScan.ok, "and that path must complete");
+    QVERIFY2(!fromNetlink.executablePath.isEmpty(), "the socket is open, so it must be attributed");
+    QCOMPARE(fromProcNet.executablePath, fromNetlink.executablePath);
+    QCOMPARE(fromProcNet.name, fromNetlink.name);
+    QVERIFY2(unnamedWalks == 0,
+             qPrintable(QStringLiteral("the text path cost %1 walks for ports it had already seen")
+                                .arg(unnamedWalks)));
+#endif
 }
 
 QTEST_MAIN(TestProcessLookup)

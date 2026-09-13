@@ -427,8 +427,18 @@ namespace {
 QString describeScan(const freetunnel::ProcessLookup &lookup)
 {
     const freetunnel::ProcessLookup::ScanReport &r = lookup.lastScan();
-    return QStringLiteral("app rules: walk %11 %1 — euid %2, pids %3 (%4 watched, %5 refused), "
-                          "sockets %6, entries %7, distinct %8, errno %9, %10 ms")
+#ifdef Q_OS_LINUX
+    // Only Linux has two ways of reading the socket tables, and which one
+    // answered is the difference between a walk of about one millisecond and
+    // one of nearly three — worth seeing in a report before anyone concludes
+    // the machine is slow.
+    const QString source = r.netlink ? QStringLiteral(", netlink") : QStringLiteral(", /proc/net");
+#else
+    const QString source;
+#endif
+    return QStringLiteral("app rules: walk %1 %2 — euid %3, pids %4 (%5 watched, %6 refused), "
+                          "sockets %7, entries %8, distinct %9, errno %10, %11 ms%12")
+            .arg(lookup.walksTaken())
             .arg(r.ok ? QStringLiteral("ok") : QStringLiteral("FAILED"))
             .arg(r.euid)
             .arg(r.pidsScanned)
@@ -439,7 +449,7 @@ QString describeScan(const freetunnel::ProcessLookup &lookup)
             .arg(r.distinctPids)
             .arg(r.lastErrno)
             .arg(r.elapsedUs / 1000.0, 0, 'f', 2)
-            .arg(lookup.walksTaken());
+            .arg(source);
 }
 
 } // namespace

@@ -111,6 +111,13 @@ public:
         int entries = 0;      // (protocol, port) -> pid pairs recorded
         int distinctPids = 0;
         int lastErrno = 0;
+        // Linux only: whether the sockets came from the kernel in binary
+        // (NETLINK_SOCK_DIAG) or had to be read back as text from /proc/net.
+        // Worth reporting because it is the difference between a walk of about
+        // one millisecond and one of nearly three, and a machine whose kernel
+        // lacks the inet_diag modules is otherwise indistinguishable from a
+        // slow one.
+        bool netlink = false;
         // Microseconds, not milliseconds. The walk is expected to land under a
         // millisecond now that it only visits the processes a rule names, and
         // the figure is not only displayed: the rebuild budget below is derived

@@ -11,6 +11,8 @@
 
 #ifdef _WIN32
 #include <winsock2.h>
+// sockaddr_in6 lives here, not in winsock2.h — the static_assert below needs it.
+#include <ws2tcpip.h>
 #else
 #include <netinet/in.h>
 #include <sys/socket.h>

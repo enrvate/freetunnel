@@ -57,11 +57,31 @@ public:
     // the previous session saw is gone.
     void invalidate();
 
-    // True when the most recent scan produced no owners at all. That is a
-    // different problem from "this connection could not be attributed", and the
-    // two are indistinguishable from a log of unattributed connections — so the
-    // caller reports it once, where the user is already looking.
-    bool lastScanFoundNothing() const { return m_everBuilt && m_owners.isEmpty(); }
+    // What the last scan actually saw.
+    //
+    // This replaces a boolean that could not fire. It asked whether the owner
+    // table was empty, and the table is never empty: the helper always owns its
+    // own listening socket, and a process can always inspect itself. So the one
+    // state it was written to catch — "this machine reports nothing" — looked
+    // identical to success, and a report of "no, that line never appeared"
+    // would have meant nothing at all.
+    //
+    // distinctPids is the number that settles it. One means the scan saw only
+    // this process, and the problem is that it cannot see others. Hundreds means
+    // the table is fine and the misses are elsewhere — a port that was never in
+    // it, or one that arrived after the last walk.
+    struct ScanReport {
+        bool ok = false;      // the walk ran to completion
+        int euid = -1;        // who we were while walking
+        int pidsScanned = 0;
+        int pidsSkipped = 0;  // processes whose descriptors we were refused
+        int socketsSeen = 0;
+        int entries = 0;      // (protocol, port) -> pid pairs recorded
+        int distinctPids = 0;
+        int lastErrno = 0;
+        qint64 elapsedMs = 0;
+    };
+    const ScanReport &lastScan() const { return m_report; }
 
 private:
     void refreshIfStale();
@@ -73,6 +93,11 @@ private:
     // which is what makes this key enough.
     QHash<std::uint32_t, qint64> m_owners;
     QHash<qint64, AppIdentity> m_identities;
+    ScanReport m_report;
+
+    // Fills the parts of the report every platform can answer, and stamps the
+    // table as ready. Called at the end of each platform's walk.
+    void finishScan(std::chrono::steady_clock::time_point startedAt, bool ok);
 };
 
 // The executable behind a process id, or an empty identity when the OS will not

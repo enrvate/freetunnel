@@ -37,6 +37,7 @@ private slots:
     void parsesAnIpv6ProcNetTable();
     void ignoresTheHeaderAndAnythingMalformed();
     void anUnknownPidHasNoIdentity();
+    void theScanReportsWhatItSaw();
 };
 
 // The whole chain, on the real operating system: a socket exists, therefore the
@@ -163,6 +164,30 @@ void TestProcessLookup::anUnknownPidHasNoIdentity()
 {
     QVERIFY(freetunnel::identityForPid(-1).executablePath.isEmpty());
     QVERIFY(freetunnel::identityForPid(0).executablePath.isEmpty());
+}
+
+// The report exists because the boolean it replaced could not fire: it asked
+// whether the owner table was empty, and it never is — this process always owns
+// a socket and can always inspect itself. So "no sockets found" looked exactly
+// like success, and asking a person whether that line appeared would have told
+// us nothing either way.
+void TestProcessLookup::theScanReportsWhatItSaw()
+{
+    QTcpServer server;
+    QVERIFY(server.listen(QHostAddress::LocalHost, 0));
+
+    ProcessLookup lookup;
+    lookup.resolve(LocalFlow{AF_INET, IPPROTO_TCP, server.serverPort(), QString()});
+
+    const auto r = lookup.lastScan();
+    QVERIFY2(r.ok, "the walk ran");
+    QVERIFY2(r.entries > 0, "this machine has open sockets, so the table cannot be empty");
+    QVERIFY2(r.distinctPids >= 1, "at least this process owns something");
+    // The number the macOS investigation turns on: one means the scan can only
+    // see itself, which is a different fault from a port that was never listed.
+    QVERIFY2(r.distinctPids > 1,
+             qPrintable(QStringLiteral("only %1 process visible — the scan cannot see others")
+                                .arg(r.distinctPids)));
 }
 
 QTEST_MAIN(TestProcessLookup)

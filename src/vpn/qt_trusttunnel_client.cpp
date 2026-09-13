@@ -511,19 +511,31 @@ ag::VpnCallbacks QtTrustTunnelClient::makeCallbacks(const GuardPtr &guard) {
         // unobservable: a rule that never matched and a rule that matched and
         // was overruled look identical from outside, and the first question
         // anyone asks — "did it even see my program?" — has no answer.
-        // Said once, and said where the user is looking. Without it, "no program
-        // owns this connection" and "no program on this machine can be
-        // identified" produce the same log — and only the second is a fault in
-        // here. The helper's own stderr goes to a root-owned temp file, which
-        // is no use to anyone reporting a problem.
-        if (lookup->lastScanFoundNothing() && !*scanWarned) {
+        // Said once per session, in the app's own log, because the helper's
+        // stderr goes to a root-owned temp file nobody reporting a problem will
+        // ever read. The numbers are the point: distinct is what distinguishes
+        // "this process cannot see other processes" (1) from "the table is full
+        // and the port simply was not in it" (hundreds), and those need
+        // completely different fixes. It replaces a yes/no that could not fire
+        // in either case.
+        if (!*scanWarned) {
             *scanWarned = true;
+            const freetunnel::ProcessLookup::ScanReport r = lookup->lastScan();
+            const QString line =
+                    QStringLiteral("app rules: scan %1 — euid %2, pids %3 (%4 refused), sockets "
+                                   "%5, entries %6, distinct %7, errno %8, %9 ms")
+                            .arg(r.ok ? QStringLiteral("ok") : QStringLiteral("FAILED"))
+                            .arg(r.euid)
+                            .arg(r.pidsScanned)
+                            .arg(r.pidsSkipped)
+                            .arg(r.socketsSeen)
+                            .arg(r.entries)
+                            .arg(r.distinctPids)
+                            .arg(r.lastErrno)
+                            .arg(r.elapsedMs);
             std::lock_guard<std::mutex> lk(guard->mutex);
-            if (guard->alive) {
-                postConnectionInfo(session,
-                                   QStringLiteral("app rules: this system reported no sockets at "
-                                                  "all, so no connection can be matched"));
-            }
+            if (guard->alive)
+                postConnectionInfo(session, line);
         }
 
         const bool routed = decision->action == ag::VPN_CA_FORCE_BYPASS

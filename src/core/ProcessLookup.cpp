@@ -130,11 +130,35 @@ ProcessLookup::ProcessLookup(std::chrono::milliseconds ttl)
 {
 }
 
+void ProcessLookup::finishScan(std::chrono::steady_clock::time_point startedAt, bool ok)
+{
+    const auto done = std::chrono::steady_clock::now();
+    m_report.ok = ok;
+#ifdef Q_OS_WIN
+    m_report.euid = -1; // no such notion here
+#else
+    m_report.euid = static_cast<int>(::geteuid());
+#endif
+    m_report.entries = static_cast<int>(m_owners.size());
+    QSet<qint64> pids;
+    for (const qint64 pid : m_owners)
+        pids.insert(pid);
+    m_report.distinctPids = static_cast<int>(pids.size());
+    m_report.elapsedMs =
+            std::chrono::duration_cast<std::chrono::milliseconds>(done - startedAt).count();
+    // Stamped now rather than with the time taken before the walk: stamping
+    // with the earlier value made the table count as one scan-duration old the
+    // moment it was published.
+    m_builtAt = done;
+    m_everBuilt = ok;
+}
+
 void ProcessLookup::invalidate()
 {
     m_everBuilt = false;
     m_owners.clear();
     m_identities.clear();
+    m_report = {};
 }
 
 #if defined(Q_OS_WIN)
@@ -203,8 +227,7 @@ void ProcessLookup::refreshIfStale()
                 }
             });
 
-    m_builtAt = now;
-    m_everBuilt = true;
+    finishScan(now, true);
 }
 
 #elif defined(Q_OS_MACOS)
@@ -253,16 +276,17 @@ void ProcessLookup::refreshIfStale()
         for (int f = 0; f < nFds; ++f) {
             if (fds[f].proc_fdtype != PROX_FDTYPE_SOCKET)
                 continue;
-            // Deliberately over-allocated, and this is the load-bearing detail.
-            // proc_pidfdinfo does not do short writes: the kernel compares the
-            // buffer size against ITS OWN sizeof(struct socket_fdinfo) and
-            // refuses with ENOMEM if the buffer is smaller — which libproc
-            // reports as a 0 return. So a binary built against an SDK older than
-            // the running kernel has every socket on the machine refused, and
-            // the symptom is not an error anywhere: it is that no connection can
-            // be attributed to any program. Passing a larger buffer makes the
-            // kernel's check pass whatever it grows to; the fields read below
-            // are at the front, where the layout does not move.
+            // Over-allocated as insurance, and nothing more than that. It was
+            // committed as "the macOS cause" on the theory that a kernel newer
+            // than the build SDK would refuse an exact-sized buffer with ENOMEM
+            // and skip every socket on the machine. The refusal mechanism is
+            // real, but the premise is not: sizeof(struct socket_fdinfo) has
+            // been 792 bytes at every XNU release from macOS 10.14 to now — the
+            // union is sized by un_sockinfo, which has not moved — and the
+            // structs sit outside any PRIVATE/KERNEL guard, so the SDK header
+            // and the kernel header cannot disagree. The exact-sized version was
+            // correct. This is kept because it costs nothing and removes the
+            // question, not because it fixed anything.
             alignas(socket_fdinfo) char raw[sizeof(socket_fdinfo) + 1024] = {};
             const int got = ::proc_pidfdinfo(pid, fds[f].proc_fd, PROC_PIDFDSOCKETINFO, raw,
                                              static_cast<int>(sizeof(raw)));
@@ -301,8 +325,7 @@ void ProcessLookup::refreshIfStale()
                  "unknown (scanned %d pids)",
                  nPids);
     }
-    m_builtAt = now;
-    m_everBuilt = true;
+    finishScan(now, true);
 }
 
 #else
@@ -392,8 +415,7 @@ void ProcessLookup::refreshIfStale()
         }
     }
 
-    m_builtAt = now;
-    m_everBuilt = true;
+    finishScan(now, true);
 }
 
 #endif
